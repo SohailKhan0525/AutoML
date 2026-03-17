@@ -2,10 +2,18 @@ const datasetFileInput = document.getElementById("datasetFile");
 const uploadBtn = document.getElementById("uploadBtn");
 const runAutomlBtn = document.getElementById("runAutomlBtn");
 const exportReportBtn = document.getElementById("exportReportBtn");
+const downloadModelBtn = document.getElementById("downloadModelBtn");
+const refreshDatasetsBtn = document.getElementById("refreshDatasetsBtn");
+const targetColumnSelect = document.getElementById("targetColumnSelect");
+const dropZone = document.getElementById("dropZone");
+const errorBanner = document.getElementById("errorBanner");
 const appStatus = document.getElementById("appStatus");
 const pipelineNotes = document.getElementById("pipelineNotes");
+const progressStatus = document.getElementById("progressStatus");
 const datasetName = document.getElementById("datasetName");
 const datasetStatus = document.getElementById("datasetStatus");
+const emptyState = document.getElementById("emptyState");
+const datasetHistoryList = document.getElementById("datasetHistoryList");
 
 const rowsValue = document.getElementById("rowsValue");
 const columnsValue = document.getElementById("columnsValue");
@@ -23,13 +31,30 @@ const correlationPairs = document.getElementById("correlationPairs");
 const tabLinks = document.querySelectorAll("[data-tab-link]");
 const tabContents = document.querySelectorAll("[data-tab-content]");
 
+const MAX_FILE_SIZE_BYTES = 5 * 1024 * 1024;
+
 let previewColumns = [];
 let previewRows = [];
 let activeDatasetId = null;
+let selectedFile = null;
 
 function setStatus(message, isError = false) {
   appStatus.textContent = message;
   appStatus.className = `text-xs ${isError ? "text-red-500" : "text-slate-500"}`;
+}
+
+function setProgress(message) {
+  progressStatus.textContent = message;
+}
+
+function showError(message) {
+  errorBanner.textContent = message;
+  errorBanner.classList.remove("hidden");
+}
+
+function hideError() {
+  errorBanner.classList.add("hidden");
+  errorBanner.textContent = "";
 }
 
 function setPipelineNotes(message, isWarning = false) {
@@ -41,14 +66,19 @@ function setDatasetState(uploaded) {
   if (uploaded) {
     datasetStatus.textContent = "UPLOADED";
     datasetStatus.className = "px-2 py-0.5 rounded text-[10px] font-bold bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400";
+    emptyState.classList.add("hidden");
   } else {
     datasetStatus.textContent = "PENDING";
     datasetStatus.className = "px-2 py-0.5 rounded text-[10px] font-bold bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400";
+    emptyState.classList.remove("hidden");
   }
 
   exportReportBtn.disabled = !uploaded;
-  exportReportBtn.classList.toggle("opacity-50", !uploaded);
-  exportReportBtn.classList.toggle("cursor-not-allowed", !uploaded);
+  downloadModelBtn.disabled = !uploaded;
+  [exportReportBtn, downloadModelBtn].forEach((btn) => {
+    btn.classList.toggle("opacity-50", !uploaded);
+    btn.classList.toggle("cursor-not-allowed", !uploaded);
+  });
 }
 
 function setAutomlStateComplete() {
@@ -67,6 +97,18 @@ async function apiCall(url, options = {}) {
   return payload;
 }
 
+function validateFile(file) {
+  if (!file) {
+    throw new Error("Please select a file.");
+  }
+  if (!file.name.toLowerCase().endsWith(".csv")) {
+    throw new Error("Only CSV files are supported.");
+  }
+  if (file.size > MAX_FILE_SIZE_BYTES) {
+    throw new Error("File too large. Max size is 5 MB.");
+  }
+}
+
 function renderPreview(columns, rows) {
   if (!columns.length) {
     previewTable.innerHTML = "";
@@ -76,15 +118,11 @@ function renderPreview(columns, rows) {
 
   const head = `
     <thead class="bg-slate-50 dark:bg-slate-800 text-slate-500 uppercase text-[10px] font-bold tracking-widest">
-      <tr>${columns
-        .map((col) => `<th class="px-6 py-3 border-b border-slate-200 dark:border-slate-800">${col}</th>`)
-        .join("")}</tr>
+      <tr>${columns.map((col) => `<th class="px-6 py-3 border-b border-slate-200 dark:border-slate-800">${col}</th>`).join("")}</tr>
     </thead>`;
 
   const bodyRows = rows
-    .map((row) => `<tr>${columns
-      .map((col) => `<td class="px-6 py-4 border-t border-slate-100 dark:border-slate-800">${row[col] ?? ""}</td>`)
-      .join("")}</tr>`)
+    .map((row) => `<tr>${columns.map((col) => `<td class="px-6 py-4 border-t border-slate-100 dark:border-slate-800">${row[col] ?? ""}</td>`).join("")}</tr>`)
     .join("");
 
   previewTable.innerHTML = `${head}<tbody class="divide-y divide-slate-100 dark:divide-slate-800">${bodyRows || ""}</tbody>`;
@@ -185,28 +223,15 @@ function renderCorrelation(correlationData) {
   correlationGrid.innerHTML = cells.join("");
 
   const topPair = (correlationData.top_pairs || [])[0];
-  if (topPair) {
-    correlationPairs.textContent = `Top pair: ${topPair.feature_1} vs ${topPair.feature_2} (corr=${topPair.correlation})`;
-  } else {
-    correlationPairs.textContent = "No strong pair found.";
-  }
+  correlationPairs.textContent = topPair
+    ? `Top pair: ${topPair.feature_1} vs ${topPair.feature_2} (corr=${topPair.correlation})`
+    : "No strong pair found.";
 }
 
 function switchTab(tabName) {
   tabContents.forEach((section) => {
     const show = section.getAttribute("data-tab-content") === tabName;
     section.classList.toggle("hidden", !show);
-  });
-
-  tabLinks.forEach((link) => {
-    const isActive = link.getAttribute("data-tab-link") === tabName;
-    if (isActive) {
-      link.classList.add("text-primary", "font-semibold", "bg-primary/10");
-      link.classList.remove("text-slate-500", "dark:text-slate-400");
-    } else {
-      link.classList.remove("text-primary", "font-semibold", "bg-primary/10");
-      link.classList.add("text-slate-500", "dark:text-slate-400");
-    }
   });
 }
 
@@ -216,6 +241,40 @@ function resetResultSections() {
   modelTableBody.innerHTML = '<tr><td class="px-6 py-4" colspan="6">No model results yet. Upload a dataset and run AutoML.</td></tr>';
   renderCorrelation(null);
   setPipelineNotes("Pipeline notes will appear here.");
+}
+
+function populateTargetSelector(columns, selected = "") {
+  targetColumnSelect.innerHTML = '<option value="">Target (auto: last column)</option>';
+  columns.forEach((col) => {
+    const option = document.createElement("option");
+    option.value = col;
+    option.textContent = col;
+    if (selected && selected === col) {
+      option.selected = true;
+    }
+    targetColumnSelect.appendChild(option);
+  });
+}
+
+async function loadDatasetHistory() {
+  const payload = await apiCall("/datasets");
+  const datasets = payload.datasets || [];
+  if (!datasets.length) {
+    datasetHistoryList.innerHTML = '<p class="text-slate-500">No datasets in history.</p>';
+    return;
+  }
+
+  datasetHistoryList.innerHTML = datasets
+    .map((item) => {
+      return `<div class="flex items-center justify-between border border-slate-200 dark:border-slate-700 rounded-lg px-3 py-2">
+        <button type="button" class="text-left hover:text-primary" data-load-dataset="${item.dataset_id}">
+          <div class="font-medium">${item.filename}</div>
+          <div class="text-slate-500">${item.rows} rows, ${item.columns} cols</div>
+        </button>
+        <button type="button" class="text-red-500 hover:underline" data-delete-dataset="${item.dataset_id}">Delete</button>
+      </div>`;
+    })
+    .join("");
 }
 
 async function loadSummary() {
@@ -236,6 +295,7 @@ async function loadSummary() {
   previewRows = payload.preview_rows || [];
   renderPreview(previewColumns, previewRows);
   renderCorrelation(summary.correlation);
+  populateTargetSelector(summary.column_names, targetColumnSelect.value || "");
 
   if (payload.summary_cache_hit) {
     setPipelineNotes("Summary loaded from cache for faster response.");
@@ -243,18 +303,17 @@ async function loadSummary() {
 }
 
 async function handleUpload() {
-  const file = datasetFileInput.files[0];
-  if (!file) {
-    setStatus("Please choose a CSV file first.", true);
-    return;
-  }
-
-  setStatus("Uploading dataset...");
-  uploadBtn.disabled = true;
-  runAutomlBtn.disabled = true;
-  resetResultSections();
-
   try {
+    hideError();
+    const file = selectedFile || datasetFileInput.files[0];
+    validateFile(file);
+
+    setProgress("Step 1/3: Uploading and validating dataset...");
+    setStatus("Uploading dataset...");
+    uploadBtn.disabled = true;
+    runAutomlBtn.disabled = true;
+    resetResultSections();
+
     const formData = new FormData();
     formData.append("file", file);
     const payload = await apiCall("/upload", { method: "POST", body: formData });
@@ -262,9 +321,13 @@ async function handleUpload() {
 
     setDatasetState(true);
     datasetName.textContent = payload.filename;
-    setStatus(`Upload complete in ${payload.parse_time_ms} ms. Summary loaded. Click Run AutoML.`);
+    setStatus(`Upload complete in ${payload.parse_time_ms} ms.`);
+    setProgress("Step 2/3: Building summary and quality diagnostics...");
     await loadSummary();
+    await loadDatasetHistory();
+    setProgress("Step 3/3: Ready to run AutoML.");
   } catch (error) {
+    showError(error.message);
     setStatus(error.message, true);
     setDatasetState(false);
   } finally {
@@ -275,16 +338,20 @@ async function handleUpload() {
 
 async function runAutoml() {
   if (!activeDatasetId) {
+    showError("Upload a dataset before running AutoML.");
     setStatus("Upload a dataset before running AutoML.", true);
     return;
   }
 
   setStatus("Running AutoML models. This may take a moment...");
+  setProgress("Step 1/2: Training models...");
   runAutomlBtn.disabled = true;
   runAutomlBtn.classList.add("opacity-60", "cursor-not-allowed");
 
   try {
-    const payload = await apiCall(`/run-automl?dataset_id=${encodeURIComponent(activeDatasetId)}`, { method: "POST" });
+    hideError();
+    const target = targetColumnSelect.value ? `&target_column=${encodeURIComponent(targetColumnSelect.value)}` : "";
+    const payload = await apiCall(`/run-automl?dataset_id=${encodeURIComponent(activeDatasetId)}${target}`, { method: "POST" });
     const results = payload.ml_results;
 
     targetInfo.textContent = `Target: ${results.target_column}`;
@@ -293,25 +360,28 @@ async function runAutoml() {
     renderFeatureImportance(results.feature_importance || []);
     renderLeaderboard(results.model_scores || []);
 
-    const noteParts = [];
+    const quality = results.quality_score || {};
+    const notes = [];
     if ((results.dropped_feature_columns || []).length > 0) {
-      noteParts.push(`Dropped high-cardinality columns: ${results.dropped_feature_columns.join(", ")}`);
+      notes.push(`Dropped high-cardinality columns: ${results.dropped_feature_columns.join(", ")}`);
     }
-    if ((results.model_failures || []).length > 0) {
-      noteParts.push(`Model warnings: ${results.model_failures.map((m) => m.model_name).join(", ")}`);
+    if (quality.score !== undefined) {
+      notes.push(`Dataset quality score: ${quality.score}/100`);
+    }
+    if ((results.auto_insights || []).length > 0) {
+      notes.push(`Insight: ${results.auto_insights[0]}`);
     }
     if (payload.automl_cache_hit) {
-      noteParts.push("AutoML results returned from cache.");
+      notes.push("AutoML results returned from cache.");
     }
-    if (noteParts.length > 0) {
-      setPipelineNotes(noteParts.join(" | "), true);
-    } else {
-      setPipelineNotes("All models executed successfully.");
-    }
+    setPipelineNotes(notes.join(" | ") || "All models executed successfully.", notes.length > 0);
 
     setAutomlStateComplete();
+    setProgress("Step 2/2: Training complete. Results rendered.");
     setStatus(`AutoML complete for ${payload.filename} in ${results.execution_time_ms} ms.`);
+    switchTab("models");
   } catch (error) {
+    showError(error.message);
     setStatus(error.message, true);
   } finally {
     runAutomlBtn.disabled = false;
@@ -321,11 +391,12 @@ async function runAutoml() {
 
 async function exportReport() {
   if (!activeDatasetId) {
-    setStatus("Upload a dataset before exporting report.", true);
+    showError("Upload a dataset before exporting report.");
     return;
   }
 
   try {
+    hideError();
     setStatus("Preparing report export...");
     const response = await fetch(`/report?dataset_id=${encodeURIComponent(activeDatasetId)}`);
     if (!response.ok) {
@@ -344,20 +415,108 @@ async function exportReport() {
     URL.revokeObjectURL(url);
     setStatus("Report exported successfully.");
   } catch (error) {
+    showError(error.message);
     setStatus(error.message, true);
+  }
+}
+
+async function downloadModel() {
+  if (!activeDatasetId) {
+    showError("Run AutoML before downloading model.");
+    return;
+  }
+
+  try {
+    hideError();
+    const target = targetColumnSelect.value ? `&target_column=${encodeURIComponent(targetColumnSelect.value)}` : "";
+    const response = await fetch(`/model/download?dataset_id=${encodeURIComponent(activeDatasetId)}${target}`);
+    if (!response.ok) {
+      const payload = await response.json();
+      throw new Error(payload.error || "Failed to download model.");
+    }
+
+    const blob = await response.blob();
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = `${datasetName.textContent || "model"}.pkl`;
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    URL.revokeObjectURL(url);
+    setStatus("Model downloaded successfully.");
+  } catch (error) {
+    showError(error.message);
+    setStatus(error.message, true);
+  }
+}
+
+async function handleHistoryClick(event) {
+  const loadBtn = event.target.closest("[data-load-dataset]");
+  if (loadBtn) {
+    activeDatasetId = loadBtn.getAttribute("data-load-dataset");
+    setDatasetState(true);
+    setStatus("Loading selected dataset from history...");
+    await loadSummary();
+    switchTab("overview");
+    return;
+  }
+
+  const deleteBtn = event.target.closest("[data-delete-dataset]");
+  if (deleteBtn) {
+    const datasetId = deleteBtn.getAttribute("data-delete-dataset");
+    await apiCall(`/dataset?dataset_id=${encodeURIComponent(datasetId)}`, { method: "DELETE" });
+    if (activeDatasetId === datasetId) {
+      activeDatasetId = null;
+      setDatasetState(false);
+      resetResultSections();
+      datasetName.textContent = "No dataset uploaded";
+      setStatus("Dataset deleted.");
+    }
+    await loadDatasetHistory();
+  }
+}
+
+function onFilePicked(file) {
+  try {
+    validateFile(file);
+    selectedFile = file;
+    setStatus(`Selected ${file.name}. Click Upload CSV.`);
+    hideError();
+  } catch (error) {
+    showError(error.message);
   }
 }
 
 datasetFileInput.addEventListener("change", () => {
   const file = datasetFileInput.files[0];
-  if (!file) {
-    return;
+  if (file) {
+    onFilePicked(file);
   }
-  setStatus(`Selected ${file.name}. Click Upload CSV.`);
 });
+
+dropZone.addEventListener("dragover", (event) => {
+  event.preventDefault();
+  dropZone.classList.add("ring-2", "ring-primary");
+});
+dropZone.addEventListener("dragleave", () => {
+  dropZone.classList.remove("ring-2", "ring-primary");
+});
+dropZone.addEventListener("drop", (event) => {
+  event.preventDefault();
+  dropZone.classList.remove("ring-2", "ring-primary");
+  const file = event.dataTransfer?.files?.[0];
+  if (file) {
+    onFilePicked(file);
+  }
+});
+
 uploadBtn.addEventListener("click", handleUpload);
 runAutomlBtn.addEventListener("click", runAutoml);
 exportReportBtn.addEventListener("click", exportReport);
+downloadModelBtn.addEventListener("click", downloadModel);
+refreshDatasetsBtn.addEventListener("click", loadDatasetHistory);
+datasetHistoryList.addEventListener("click", handleHistoryClick);
 filterRowsInput.addEventListener("input", applyPreviewFilter);
 tabLinks.forEach((link) => {
   link.addEventListener("click", (event) => {
@@ -368,3 +527,4 @@ tabLinks.forEach((link) => {
 
 setDatasetState(false);
 switchTab("overview");
+loadDatasetHistory().catch(() => {});

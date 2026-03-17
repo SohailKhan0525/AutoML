@@ -1,10 +1,15 @@
 import json
+import logging
+import pickle
+import time
+from asyncio import Lock
 from time import perf_counter
+from typing import Any
 from uuid import uuid4
 
 import numpy as np
 import pandas as pd
-from fastapi import FastAPI, File, HTTPException, Request, UploadFile
+from fastapi import Body, FastAPI, File, HTTPException, Query, Request, UploadFile
 from fastapi.responses import JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -20,21 +25,59 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 app.state.datasets = {}
 app.state.dataset_order = []
 app.state.latest_dataset_id = None
-MAX_DATASETS_IN_MEMORY = 2
+app.state.automl_lock = Lock()
+
+MAX_DATASETS_IN_MEMORY = 6
+MAX_FILE_SIZE_BYTES = 5 * 1024 * 1024
+MAX_ROWS = 100_000
+MAX_COLUMNS = 50
+DATASET_TTL_SECONDS = 60 * 60
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+logger = logging.getLogger("automl")
+
+
+def _remove_dataset(dataset_id: str) -> None:
+    if dataset_id in app.state.datasets:
+        del app.state.datasets[dataset_id]
+    if dataset_id in app.state.dataset_order:
+        app.state.dataset_order.remove(dataset_id)
+    if app.state.latest_dataset_id == dataset_id:
+        app.state.latest_dataset_id = app.state.dataset_order[-1] if app.state.dataset_order else None
+
+
+def _cleanup_expired_datasets() -> None:
+    now = time.time()
+    expired_ids: list[str] = []
+    for dataset_id in list(app.state.dataset_order):
+        dataset = app.state.datasets.get(dataset_id)
+        if not dataset:
+            expired_ids.append(dataset_id)
+            continue
+        if now - dataset["created_at"] > DATASET_TTL_SECONDS:
+            expired_ids.append(dataset_id)
+
+    for dataset_id in expired_ids:
+        logger.info("Expiring dataset %s", dataset_id)
+        _remove_dataset(dataset_id)
 
 
 def _get_dataset(dataset_id: str | None):
+    _cleanup_expired_datasets()
     if dataset_id:
         dataset = app.state.datasets.get(dataset_id)
         if dataset is None:
             raise HTTPException(status_code=404, detail="Dataset not found.")
+        dataset["last_accessed_at"] = time.time()
         return dataset
 
     latest_id = app.state.latest_dataset_id
     if latest_id is None:
         raise HTTPException(status_code=400, detail="No dataset uploaded yet.")
 
-    return app.state.datasets[latest_id]
+    dataset = app.state.datasets[latest_id]
+    dataset["last_accessed_at"] = time.time()
+    return dataset
 
 
 @app.get("/")
@@ -44,6 +87,7 @@ async def index(request: Request):
 
 @app.post("/upload")
 async def upload_dataset(file: UploadFile = File(...)):
+    """Upload and validate CSV dataset with production-safe limits."""
     if not file.filename or not file.filename.lower().endswith(".csv"):
         raise HTTPException(status_code=400, detail="Please upload a valid CSV file.")
 
@@ -51,8 +95,13 @@ async def upload_dataset(file: UploadFile = File(...)):
         if file.file is None:
             raise HTTPException(status_code=400, detail="Uploaded file is empty.")
 
-        start = perf_counter()
+        file.file.seek(0, 2)
+        file_size = file.file.tell()
         file.file.seek(0)
+        if file_size > MAX_FILE_SIZE_BYTES:
+            raise HTTPException(status_code=400, detail="File too large. Max size is 5 MB.")
+
+        start = perf_counter()
         df = pd.read_csv(file.file)
         parse_ms = round((perf_counter() - start) * 1000, 2)
 
@@ -71,14 +120,25 @@ async def upload_dataset(file: UploadFile = File(...)):
             detail="Dataset must contain at least one feature column and one target column.",
         )
 
+    if df.shape[0] > MAX_ROWS:
+        raise HTTPException(status_code=400, detail=f"Dataset has too many rows. Max allowed is {MAX_ROWS}.")
+
+    if df.shape[1] > MAX_COLUMNS:
+        raise HTTPException(status_code=400, detail=f"Dataset has too many columns. Max allowed is {MAX_COLUMNS}.")
+
     dataset_id = str(uuid4())
+    now = time.time()
     app.state.datasets[dataset_id] = {
         "id": dataset_id,
         "filename": file.filename,
         "df": df,
+        "rows": int(df.shape[0]),
+        "columns": int(df.shape[1]),
+        "created_at": now,
+        "last_accessed_at": now,
         "summary": None,
-        "preview_rows": None,
-        "ml_results": None,
+        "automl_cache": {},
+        "model_artifacts": {},
     }
     app.state.dataset_order.append(dataset_id)
     app.state.latest_dataset_id = dataset_id
@@ -86,23 +146,38 @@ async def upload_dataset(file: UploadFile = File(...)):
     # Keep memory bounded for low-resource deployment.
     while len(app.state.dataset_order) > MAX_DATASETS_IN_MEMORY:
         oldest_id = app.state.dataset_order.pop(0)
-        del app.state.datasets[oldest_id]
+        _remove_dataset(oldest_id)
+
+    logger.info("Uploaded dataset %s (%s) rows=%s cols=%s", dataset_id, file.filename, df.shape[0], df.shape[1])
 
     return {
         "message": "Dataset uploaded successfully.",
         "filename": file.filename,
         "dataset_id": dataset_id,
         "parse_time_ms": parse_ms,
+        "rows": int(df.shape[0]),
+        "columns": int(df.shape[1]),
     }
 
 
 @app.get("/datasets")
 async def list_datasets():
+    """List active datasets retained in memory for the current app instance."""
+    _cleanup_expired_datasets()
+    now = time.time()
     return {
         "datasets": [
             {
                 "dataset_id": dataset_id,
                 "filename": app.state.datasets[dataset_id]["filename"],
+                "rows": app.state.datasets[dataset_id]["rows"],
+                "columns": app.state.datasets[dataset_id]["columns"],
+                "created_at": app.state.datasets[dataset_id]["created_at"],
+                "expires_in_seconds": max(
+                    0,
+                    int(DATASET_TTL_SECONDS - (now - app.state.datasets[dataset_id]["created_at"])),
+                ),
+                "trained_targets": list(app.state.datasets[dataset_id]["automl_cache"].keys()),
             }
             for dataset_id in reversed(app.state.dataset_order)
             if dataset_id in app.state.datasets
@@ -112,6 +187,7 @@ async def list_datasets():
 
 @app.get("/summary")
 async def dataset_summary(dataset_id: str | None = None, preview_rows: int = 5):
+    """Return summary and preview rows with summary cache support."""
     dataset = _get_dataset(dataset_id)
     df = dataset["df"]
     filename = dataset["filename"]
@@ -136,38 +212,61 @@ async def dataset_summary(dataset_id: str | None = None, preview_rows: int = 5):
 
 
 @app.post("/run-automl")
-async def run_automl(dataset_id: str | None = None):
+async def run_automl(
+    dataset_id: str | None = None,
+    target_column: str | None = Query(default=None),
+):
+    """Train models for a dataset and selected target with per-target caching."""
     dataset = _get_dataset(dataset_id)
     df = dataset["df"]
     filename = dataset["filename"]
+    selected_target = target_column or str(df.columns[-1])
 
-    automl_cache_hit = dataset["ml_results"] is not None
-    if dataset["ml_results"] is None:
+    automl_cache_hit = selected_target in dataset["automl_cache"]
+    if not automl_cache_hit:
         try:
-            start = perf_counter()
-            ml_results = run_ml_pipeline(df)
-            ml_results["execution_time_ms"] = round((perf_counter() - start) * 1000, 2)
-            dataset["ml_results"] = ml_results
+            async with app.state.automl_lock:
+                # Re-check inside lock in case another request already trained this target.
+                if selected_target in dataset["automl_cache"]:
+                    ml_results = dataset["automl_cache"][selected_target]
+                    automl_cache_hit = True
+                else:
+                    start = perf_counter()
+                    ml_results, best_model = run_ml_pipeline(
+                        df,
+                        target_column=selected_target,
+                        return_best_model=True,
+                    )
+                    ml_results["execution_time_ms"] = round((perf_counter() - start) * 1000, 2)
+                    dataset["automl_cache"][selected_target] = ml_results
+                    dataset["model_artifacts"][selected_target] = {
+                        "blob": pickle.dumps(best_model),
+                        "trained_at": time.time(),
+                        "feature_columns": [c for c in df.columns if c != selected_target],
+                    }
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except Exception as exc:
             raise HTTPException(status_code=500, detail=f"ML pipeline failed: {exc}") from exc
     else:
-        ml_results = dataset["ml_results"]
+        ml_results = dataset["automl_cache"][selected_target]
 
     return {
         "dataset_id": dataset["id"],
         "filename": filename,
         "ml_results": ml_results,
+        "target_column": selected_target,
         "automl_cache_hit": automl_cache_hit,
     }
 
 
 @app.get("/report")
 async def export_report(dataset_id: str | None = None):
+    """Download a JSON report combining summary and latest AutoML outputs."""
     dataset = _get_dataset(dataset_id)
     summary_payload = await dataset_summary(dataset_id=dataset["id"], preview_rows=10)
-    automl_payload = await run_automl(dataset_id=dataset["id"])
+    target = list(dataset["automl_cache"].keys())[-1] if dataset["automl_cache"] else None
+    automl_payload = await run_automl(dataset_id=dataset["id"], target_column=target)
 
     report = {
         "dataset_id": dataset["id"],
@@ -185,6 +284,73 @@ async def export_report(dataset_id: str | None = None):
             "Content-Disposition": f'attachment; filename="{dataset["filename"].rsplit(".", 1)[0]}_report.json"'
         },
     )
+
+
+@app.get("/model/download")
+async def download_model(dataset_id: str, target_column: str | None = None):
+    """Download a trained model artifact as a pickle file."""
+    dataset = _get_dataset(dataset_id)
+    selected_target = target_column or (list(dataset["model_artifacts"].keys())[-1] if dataset["model_artifacts"] else None)
+    if not selected_target:
+        raise HTTPException(status_code=400, detail="No trained model available. Run AutoML first.")
+
+    artifact = dataset["model_artifacts"].get(selected_target)
+    if not artifact:
+        raise HTTPException(status_code=404, detail="Trained model for selected target not found.")
+
+    base_name = dataset["filename"].rsplit(".", 1)[0]
+    return Response(
+        content=artifact["blob"],
+        media_type="application/octet-stream",
+        headers={"Content-Disposition": f'attachment; filename="{base_name}_{selected_target}.pkl"'},
+    )
+
+
+@app.post("/predict")
+async def predict(
+    dataset_id: str,
+    target_column: str | None = None,
+    records: list[dict[str, Any]] | dict[str, Any] = Body(...),
+):
+    """Run predictions with a previously trained model using JSON feature records."""
+    dataset = _get_dataset(dataset_id)
+    selected_target = target_column or (list(dataset["model_artifacts"].keys())[-1] if dataset["model_artifacts"] else None)
+    if not selected_target:
+        raise HTTPException(status_code=400, detail="No trained model available. Run AutoML first.")
+
+    artifact = dataset["model_artifacts"].get(selected_target)
+    if not artifact:
+        raise HTTPException(status_code=404, detail="No model artifact found for selected target.")
+
+    if isinstance(records, dict):
+        records = [records]
+    if not records:
+        raise HTTPException(status_code=400, detail="Prediction payload is empty.")
+
+    model = pickle.loads(artifact["blob"])
+    input_df = pd.DataFrame(records)
+    expected_columns = artifact["feature_columns"]
+    for col in expected_columns:
+        if col not in input_df.columns:
+            input_df[col] = np.nan
+    input_df = input_df[expected_columns]
+
+    predictions = model.predict(input_df).tolist()
+    return {
+        "dataset_id": dataset_id,
+        "target_column": selected_target,
+        "count": len(predictions),
+        "predictions": predictions,
+    }
+
+
+@app.delete("/dataset")
+async def delete_dataset(dataset_id: str):
+    """Delete a dataset from in-memory cache."""
+    if dataset_id not in app.state.datasets:
+        raise HTTPException(status_code=404, detail="Dataset not found.")
+    _remove_dataset(dataset_id)
+    return {"message": "Dataset deleted successfully.", "dataset_id": dataset_id}
 
 
 @app.post("/api/upload")

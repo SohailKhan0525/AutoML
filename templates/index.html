@@ -87,20 +87,36 @@
                         Export Report
                     </button>
 <input class="block w-56 text-xs text-slate-600 file:mr-2 file:rounded-lg file:border-0 file:bg-primary/10 file:px-3 file:py-2 file:font-semibold file:text-primary hover:file:bg-primary/20" id="datasetFile" type="file" accept=".csv"/>
+<select class="rounded-lg border border-slate-200 dark:border-slate-700 px-3 py-2 text-xs bg-white dark:bg-slate-900" id="targetColumnSelect">
+<option value="">Target (auto: last column)</option>
+</select>
 <button class="border border-primary text-primary px-4 py-2 rounded-lg text-sm font-medium hover:bg-primary/10" id="uploadBtn" type="button">
                         Upload CSV
                     </button>
 <button class="bg-primary text-white px-4 py-2 rounded-lg text-sm font-medium hover:opacity-90" id="runAutomlBtn">
                         Run AutoML
                     </button>
+<button class="border border-slate-300 dark:border-slate-700 px-4 py-2 rounded-lg text-sm font-medium hover:bg-slate-50 dark:hover:bg-slate-800" id="downloadModelBtn" type="button">
+                        Download Model
+                    </button>
 </div>
 </header>
 <div class="px-6 pt-3">
 <p class="text-xs text-slate-500" id="appStatus">Upload a CSV file to begin.</p>
 <p class="text-xs text-slate-500 mt-1" id="pipelineNotes">Pipeline notes will appear here.</p>
+<p class="text-xs text-slate-500 mt-1" id="progressStatus">Step 0: Waiting for file upload.</p>
+<div class="hidden mt-2 px-3 py-2 rounded-lg border border-red-200 bg-red-50 text-red-700 text-xs" id="errorBanner"></div>
+</div>
+<div class="px-6 pt-3">
+<div class="border border-dashed border-primary/40 rounded-xl p-4 bg-white/50 dark:bg-slate-900/40 text-center text-sm text-slate-600 dark:text-slate-300" id="dropZone">
+Drag & drop a CSV here, or use the file picker above.
+</div>
 </div>
 <div class="p-6 space-y-6 max-w-7xl mx-auto">
 <section data-tab-content="overview" class="space-y-6">
+<div class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-6 text-center text-slate-500" id="emptyState">
+No dataset loaded yet. Upload a CSV and run AutoML to populate dashboard insights.
+</div>
 <!-- Summary Cards -->
 <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
 <div class="bg-white dark:bg-slate-900 p-6 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm">
@@ -167,6 +183,15 @@
 </section>
 <!-- Data Preview Table -->
 <section data-tab-content="data" class="hidden">
+<div class="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm p-4 mb-4">
+<div class="flex items-center justify-between mb-2">
+<h4 class="font-semibold">Dataset History</h4>
+<button class="text-xs text-primary hover:underline" id="refreshDatasetsBtn" type="button">Refresh</button>
+</div>
+<div class="space-y-2 text-xs" id="datasetHistoryList">
+<p class="text-slate-500">No datasets in history.</p>
+</div>
+</div>
 <div class="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm overflow-hidden">
 <div class="p-6 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between">
 <h3 class="font-bold flex items-center gap-2">
