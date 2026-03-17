@@ -1,0 +1,251 @@
+<!DOCTYPE html>
+
+<html lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<script id="tailwind-config">
+        tailwind.config = {
+            darkMode: "class",
+            theme: {
+                extend: {
+                    colors: {
+                        "primary": "#1349ec",
+                        "background-light": "#f6f6f8",
+                        "background-dark": "#101522",
+                    },
+                    fontFamily: {
+                        "display": ["Inter"]
+                    },
+                    borderRadius: {"DEFAULT": "0.25rem", "lg": "0.5rem", "xl": "0.75rem", "full": "9999px"},
+                },
+            },
+        }
+    </script>
+<title>AutoML Dataset Analyzer</title>
+<style>
+    body {
+      min-height: max(884px, 100dvh);
+    }
+  </style>
+  </head>
+<body class="bg-background-light dark:bg-background-dark font-display text-slate-900 dark:text-slate-100">
+<div class="flex h-screen overflow-hidden">
+<!-- Sidebar -->
+<aside class="hidden md:flex flex-col w-64 bg-white dark:bg-slate-900 border-r border-slate-200 dark:border-slate-800">
+<div class="p-6 flex items-center gap-3">
+<div class="bg-primary p-2 rounded-lg text-white">
+<span class="material-symbols-outlined block">analytics</span>
+</div>
+<h1 class="text-xl font-bold tracking-tight">AutoML</h1>
+</div>
+<nav class="flex-1 px-4 space-y-1">
+<a class="flex items-center gap-3 px-4 py-3 rounded-lg bg-primary/10 text-primary font-semibold" data-tab-link="overview" href="#">
+<span class="material-symbols-outlined">dashboard</span>
+<span>Overview</span>
+</a>
+<a class="flex items-center gap-3 px-4 py-3 rounded-lg text-slate-600 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors" data-tab-link="data" href="#">
+<span class="material-symbols-outlined">table_chart</span>
+<span>Datasets</span>
+</a>
+<a class="flex items-center gap-3 px-4 py-3 rounded-lg text-slate-600 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors" data-tab-link="models" href="#">
+<span class="material-symbols-outlined">model_training</span>
+<span>Models</span>
+</a>
+<a class="flex items-center gap-3 px-4 py-3 rounded-lg text-slate-600 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors" href="#">
+<span class="material-symbols-outlined">settings</span>
+<span>Settings</span>
+</a>
+</nav>
+<div class="p-4 border-t border-slate-200 dark:border-slate-800">
+<div class="flex items-center gap-3 px-4 py-2">
+<div class="w-8 h-8 rounded-full bg-slate-200 dark:bg-slate-700 flex items-center justify-center">
+<span class="material-symbols-outlined text-sm">person</span>
+</div>
+<div class="text-xs">
+<p class="font-bold">AI Researcher</p>
+<p class="text-slate-500">Pro Plan</p>
+</div>
+</div>
+</div>
+</aside>
+<!-- Main Content -->
+<main class="flex-1 overflow-y-auto">
+<!-- Header -->
+<header class="sticky top-0 z-10 bg-white/80 dark:bg-slate-900/80 backdrop-blur-md border-b border-slate-200 dark:border-slate-800 px-6 py-4 flex items-center justify-between">
+<div class="flex items-center gap-4">
+<span class="material-symbols-outlined md:hidden cursor-pointer">menu</span>
+<h2 class="text-lg font-bold" id="datasetName">No dataset uploaded</h2>
+<span class="px-2 py-0.5 rounded text-[10px] font-bold bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400" id="datasetStatus">PENDING</span>
+</div>
+<div class="flex items-center gap-3">
+<button class="flex items-center gap-2 px-4 py-2 rounded-lg border border-slate-200 dark:border-slate-700 text-sm font-medium hover:bg-slate-50 dark:hover:bg-slate-800" id="exportReportBtn" type="button">
+<span class="material-symbols-outlined text-base">cloud_download</span>
+                        Export Report
+                    </button>
+<input class="block w-56 text-xs text-slate-600 file:mr-2 file:rounded-lg file:border-0 file:bg-primary/10 file:px-3 file:py-2 file:font-semibold file:text-primary hover:file:bg-primary/20" id="datasetFile" type="file" accept=".csv"/>
+<button class="border border-primary text-primary px-4 py-2 rounded-lg text-sm font-medium hover:bg-primary/10" id="uploadBtn" type="button">
+                        Upload CSV
+                    </button>
+<button class="bg-primary text-white px-4 py-2 rounded-lg text-sm font-medium hover:opacity-90" id="runAutomlBtn">
+                        Run AutoML
+                    </button>
+</div>
+</header>
+<div class="px-6 pt-3">
+<p class="text-xs text-slate-500" id="appStatus">Upload a CSV file to begin.</p>
+<p class="text-xs text-slate-500 mt-1" id="pipelineNotes">Pipeline notes will appear here.</p>
+</div>
+<div class="p-6 space-y-6 max-w-7xl mx-auto">
+<section data-tab-content="overview" class="space-y-6">
+<!-- Summary Cards -->
+<div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+<div class="bg-white dark:bg-slate-900 p-6 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm">
+<div class="flex items-center justify-between mb-2">
+<span class="text-slate-500 text-sm font-medium uppercase tracking-wider">Total Rows</span>
+<span class="material-symbols-outlined text-primary">view_headline</span>
+</div>
+<p class="text-3xl font-bold" id="rowsValue">-</p>
+<p class="text-xs text-slate-400 mt-2 flex items-center gap-1">
+<span class="material-symbols-outlined text-xs text-green-500">trending_up</span>
+                            +12% from last upload
+                        </p>
+</div>
+<div class="bg-white dark:bg-slate-900 p-6 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm">
+<div class="flex items-center justify-between mb-2">
+<span class="text-slate-500 text-sm font-medium uppercase tracking-wider">Total Columns</span>
+<span class="material-symbols-outlined text-primary">view_column</span>
+</div>
+<p class="text-3xl font-bold" id="columnsValue">-</p>
+<p class="text-xs text-slate-400 mt-2" id="columnSplit">-</p>
+</div>
+<div class="bg-white dark:bg-slate-900 p-6 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm">
+<div class="flex items-center justify-between mb-2">
+<span class="text-slate-500 text-sm font-medium uppercase tracking-wider">Missing Values</span>
+<span class="material-symbols-outlined text-orange-500">error</span>
+</div>
+<p class="text-3xl font-bold text-orange-500" id="missingValue">-</p>
+<p class="text-xs text-slate-400 mt-2 italic" id="targetInfo">Target: -</p>
+</div>
+</div>
+<!-- Charts Section -->
+<div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+<!-- Correlation Heatmap Placeholder -->
+<div class="bg-white dark:bg-slate-900 p-6 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm">
+<div class="flex items-center justify-between mb-6">
+<h3 class="font-bold flex items-center gap-2">
+<span class="material-symbols-outlined text-primary">grid_view</span>
+                                Correlation Matrix
+                            </h3>
+</div>
+<div class="relative w-full aspect-video rounded-lg overflow-hidden bg-slate-50 dark:bg-slate-800/50 flex flex-col items-center justify-center">
+<div class="grid grid-cols-6 gap-1 w-full h-full p-4 opacity-70" id="correlationGrid">
+<div class="col-span-6 text-center text-xs text-slate-500 self-center">Upload a dataset to render correlation.</div>
+</div>
+<div class="absolute inset-0 flex items-center justify-center">
+<span class="bg-white/80 dark:bg-slate-900/80 px-4 py-2 rounded-lg border border-slate-200 dark:border-slate-700 text-xs font-bold tracking-widest uppercase">Correlation Heatmap</span>
+</div>
+</div>
+<p class="text-xs text-slate-500 mt-3" id="correlationPairs">Top correlated pairs will appear here.</p>
+</div>
+<!-- Feature Importance Chart -->
+<div class="bg-white dark:bg-slate-900 p-6 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm">
+<div class="flex items-center justify-between mb-6">
+<h3 class="font-bold flex items-center gap-2">
+<span class="material-symbols-outlined text-primary">bar_chart</span>
+                                Feature Importance
+                            </h3>
+</div>
+<div class="space-y-4" id="featureImportanceContainer">
+<p class="text-sm text-slate-500 dark:text-slate-400">Feature importance will appear after running AutoML.</p>
+</div>
+</div>
+</div>
+</section>
+<!-- Data Preview Table -->
+<section data-tab-content="data" class="hidden">
+<div class="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm overflow-hidden">
+<div class="p-6 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between">
+<h3 class="font-bold flex items-center gap-2">
+<span class="material-symbols-outlined text-primary">preview</span>
+                            Dataset Preview
+                        </h3>
+<div class="flex items-center gap-2">
+<div class="relative">
+<span class="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 text-sm">search</span>
+<input class="pl-9 pr-4 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-transparent text-sm focus:ring-primary focus:border-primary" id="filterRowsInput" placeholder="Filter rows..." type="text"/>
+</div>
+</div>
+</div>
+<div class="overflow-x-auto">
+<table class="w-full text-left text-sm" id="previewTable"></table>
+</div>
+<div class="p-4 border-t border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/50 flex items-center justify-between text-xs text-slate-500">
+<p id="previewMeta">Showing 0 entries</p>
+<div class="flex items-center gap-2">
+<button class="p-1 rounded hover:bg-slate-200 dark:hover:bg-slate-700 disabled:opacity-30"><span class="material-symbols-outlined text-sm">chevron_left</span></button>
+<span class="font-bold text-primary">1</span>
+<button class="p-1 rounded hover:bg-slate-200 dark:hover:bg-slate-700"><span class="material-symbols-outlined text-sm">chevron_right</span></button>
+</div>
+</div>
+</div>
+</section>
+<!-- Model Comparison Section -->
+<section data-tab-content="models" class="hidden">
+<div class="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm overflow-hidden">
+<div class="p-6 border-b border-slate-200 dark:border-slate-800">
+<h3 class="font-bold flex items-center gap-2">
+<span class="material-symbols-outlined text-primary">leaderboard</span>
+                            AutoML Model Leaderboard
+                        </h3>
+</div>
+<div class="overflow-x-auto">
+<table class="w-full text-left text-sm">
+<thead class="bg-slate-50 dark:bg-slate-800 text-slate-500 uppercase text-[10px] font-bold tracking-widest">
+<tr>
+<th class="px-6 py-3">Rank</th>
+<th class="px-6 py-3">Model Type</th>
+<th class="px-6 py-3">Metric</th>
+<th class="px-6 py-3">Score</th>
+<th class="px-6 py-3">Extra</th>
+<th class="px-6 py-3 text-right">Status</th>
+</tr>
+</thead>
+<tbody class="divide-y divide-slate-100 dark:divide-slate-800" id="modelTableBody">
+<tr>
+<td class="px-6 py-4" colspan="6">No model results yet. Upload a dataset and run AutoML.</td>
+</tr>
+</tbody>
+</table>
+</div>
+</div>
+</section>
+</div>
+<!-- Footer for Mobile/Quick Nav -->
+<footer class="md:hidden sticky bottom-0 z-20 bg-white dark:bg-slate-900 border-t border-slate-200 dark:border-slate-800">
+<div class="flex justify-around items-center py-2">
+<a class="flex flex-col items-center gap-1 text-primary" data-tab-link="overview" href="#">
+<span class="material-symbols-outlined">dashboard</span>
+<span class="text-[10px] font-bold">Overview</span>
+</a>
+<a class="flex flex-col items-center gap-1 text-slate-500" data-tab-link="data" href="#">
+<span class="material-symbols-outlined">table_chart</span>
+<span class="text-[10px] font-bold">Data</span>
+</a>
+<a class="flex flex-col items-center gap-1 text-slate-500" data-tab-link="models" href="#">
+<span class="material-symbols-outlined">model_training</span>
+<span class="text-[10px] font-bold">Models</span>
+</a>
+<a class="flex flex-col items-center gap-1 text-slate-500" href="#">
+<span class="material-symbols-outlined">person</span>
+<span class="text-[10px] font-bold">Profile</span>
+</a>
+</div>
+</footer>
+</main>
+</div>
+<script src="/static/app.js"></script>
+</body></html>
