@@ -28,13 +28,22 @@ app.state.latest_dataset_id = None
 app.state.automl_lock = Lock()
 
 MAX_DATASETS_IN_MEMORY = 6
-MAX_FILE_SIZE_BYTES = 5 * 1024 * 1024
+MAX_FILE_SIZE_BYTES = 40 * 1024 * 1024
 MAX_ROWS = 100_000
 MAX_COLUMNS = 50
 DATASET_TTL_SECONDS = 60 * 60
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger("automl")
+
+
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(request: Request, exc: Exception):
+    logger.exception("Unhandled server error on %s", request.url.path)
+    return JSONResponse(
+        status_code=500,
+        content={"error": "Internal server error. Please retry or check server logs."},
+    )
 
 
 def _remove_dataset(dataset_id: str) -> None:
@@ -44,6 +53,31 @@ def _remove_dataset(dataset_id: str) -> None:
         app.state.dataset_order.remove(dataset_id)
     if app.state.latest_dataset_id == dataset_id:
         app.state.latest_dataset_id = app.state.dataset_order[-1] if app.state.dataset_order else None
+
+
+def _json_safe(value: Any) -> Any:
+    """Recursively convert non-JSON-safe values (NaN/Inf/NumPy/Pandas scalars) to safe values."""
+    if value is None or value is pd.NA:
+        return None
+
+    if isinstance(value, dict):
+        return {str(k): _json_safe(v) for k, v in value.items()}
+
+    if isinstance(value, (list, tuple, set)):
+        return [_json_safe(item) for item in value]
+
+    if isinstance(value, np.generic):
+        value = value.item()
+
+    if isinstance(value, pd.Timestamp):
+        return value.isoformat()
+
+    if isinstance(value, float):
+        if np.isnan(value) or np.isinf(value):
+            return None
+        return value
+
+    return value
 
 
 def _cleanup_expired_datasets() -> None:
@@ -99,7 +133,7 @@ async def upload_dataset(file: UploadFile = File(...)):
         file_size = file.file.tell()
         file.file.seek(0)
         if file_size > MAX_FILE_SIZE_BYTES:
-            raise HTTPException(status_code=400, detail="File too large. Max size is 5 MB.")
+            raise HTTPException(status_code=400, detail="File too large. Max size is 40 MB.")
 
         start = perf_counter()
         df = pd.read_csv(file.file)
@@ -200,15 +234,17 @@ async def dataset_summary(dataset_id: str | None = None, preview_rows: int = 5):
         summary = dataset["summary"]
 
     row_count = max(1, min(preview_rows, 20))
-    preview = df.head(row_count).replace({pd.NA: None, np.nan: None}).to_dict(orient="records")
+    preview_df = df.head(row_count).replace([np.inf, -np.inf], np.nan)
+    preview = preview_df.where(pd.notna(preview_df), None).to_dict(orient="records")
 
-    return {
+    payload = {
         "dataset_id": dataset["id"],
         "filename": filename,
         "summary": summary,
         "preview_rows": preview,
         "summary_cache_hit": summary_cache_hit,
     }
+    return _json_safe(payload)
 
 
 @app.post("/run-automl")
@@ -251,13 +287,14 @@ async def run_automl(
     else:
         ml_results = dataset["automl_cache"][selected_target]
 
-    return {
+    payload = {
         "dataset_id": dataset["id"],
         "filename": filename,
         "ml_results": ml_results,
         "target_column": selected_target,
         "automl_cache_hit": automl_cache_hit,
     }
+    return _json_safe(payload)
 
 
 @app.get("/report")
@@ -276,7 +313,7 @@ async def export_report(dataset_id: str | None = None):
         "ml_results": automl_payload["ml_results"],
         "generated_at_ms": round(perf_counter() * 1000, 2),
     }
-    content = json.dumps(report)
+    content = json.dumps(_json_safe(report), allow_nan=False)
     return Response(
         content=content,
         media_type="application/json",
@@ -336,12 +373,13 @@ async def predict(
     input_df = input_df[expected_columns]
 
     predictions = model.predict(input_df).tolist()
-    return {
+    payload = {
         "dataset_id": dataset_id,
         "target_column": selected_target,
         "count": len(predictions),
         "predictions": predictions,
     }
+    return _json_safe(payload)
 
 
 @app.delete("/dataset")

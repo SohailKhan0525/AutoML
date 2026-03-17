@@ -31,7 +31,7 @@ const correlationPairs = document.getElementById("correlationPairs");
 const tabLinks = document.querySelectorAll("[data-tab-link]");
 const tabContents = document.querySelectorAll("[data-tab-content]");
 
-const MAX_FILE_SIZE_BYTES = 5 * 1024 * 1024;
+const MAX_FILE_SIZE_BYTES = 40 * 1024 * 1024;
 
 let previewColumns = [];
 let previewRows = [];
@@ -88,13 +88,43 @@ function setAutomlStateComplete() {
 
 async function apiCall(url, options = {}) {
   const response = await fetch(url, options);
-  const payload = await response.json();
+  const contentType = response.headers.get("content-type") || "";
+  let payload = {};
+
+  if (contentType.includes("application/json")) {
+    payload = await response.json();
+  } else {
+    const text = await response.text();
+    payload = { error: text || "Request failed." };
+  }
 
   if (!response.ok) {
-    throw new Error(payload.error || "Request failed.");
+    throw new Error(payload.error || payload.detail || "Request failed.");
   }
 
   return payload;
+}
+
+async function parseErrorResponse(response) {
+  const contentType = response.headers.get("content-type") || "";
+  if (contentType.includes("application/json")) {
+    const payload = await response.json();
+    return payload.error || payload.detail || "Request failed.";
+  }
+  const text = await response.text();
+  return text || "Request failed.";
+}
+
+async function recoverLatestDatasetId() {
+  const payload = await apiCall("/datasets");
+  const datasets = payload.datasets || [];
+  if (!datasets.length) {
+    throw new Error("No datasets available. Please upload again.");
+  }
+  activeDatasetId = datasets[0].dataset_id;
+  setDatasetState(true);
+  await loadSummary();
+  return activeDatasetId;
 }
 
 function validateFile(file) {
@@ -105,7 +135,7 @@ function validateFile(file) {
     throw new Error("Only CSV files are supported.");
   }
   if (file.size > MAX_FILE_SIZE_BYTES) {
-    throw new Error("File too large. Max size is 5 MB.");
+    throw new Error("File too large. Max size is 40 MB.");
   }
 }
 
@@ -398,10 +428,17 @@ async function exportReport() {
   try {
     hideError();
     setStatus("Preparing report export...");
-    const response = await fetch(`/report?dataset_id=${encodeURIComponent(activeDatasetId)}`);
+    let response = await fetch(`/report?dataset_id=${encodeURIComponent(activeDatasetId)}`);
+    if (response.status === 404) {
+      const maybeError = await parseErrorResponse(response);
+      if (String(maybeError).toLowerCase().includes("dataset not found")) {
+        await recoverLatestDatasetId();
+        response = await fetch(`/report?dataset_id=${encodeURIComponent(activeDatasetId)}`);
+      }
+    }
     if (!response.ok) {
-      const payload = await response.json();
-      throw new Error(payload.error || "Failed to export report.");
+      const message = await parseErrorResponse(response);
+      throw new Error(message || "Failed to export report.");
     }
 
     const blob = await response.blob();
@@ -429,10 +466,17 @@ async function downloadModel() {
   try {
     hideError();
     const target = targetColumnSelect.value ? `&target_column=${encodeURIComponent(targetColumnSelect.value)}` : "";
-    const response = await fetch(`/model/download?dataset_id=${encodeURIComponent(activeDatasetId)}${target}`);
+    let response = await fetch(`/model/download?dataset_id=${encodeURIComponent(activeDatasetId)}${target}`);
+    if (response.status === 404) {
+      const maybeError = await parseErrorResponse(response);
+      if (String(maybeError).toLowerCase().includes("dataset not found")) {
+        await recoverLatestDatasetId();
+        response = await fetch(`/model/download?dataset_id=${encodeURIComponent(activeDatasetId)}${target}`);
+      }
+    }
     if (!response.ok) {
-      const payload = await response.json();
-      throw new Error(payload.error || "Failed to download model.");
+      const message = await parseErrorResponse(response);
+      throw new Error(message || "Failed to download model.");
     }
 
     const blob = await response.blob();
