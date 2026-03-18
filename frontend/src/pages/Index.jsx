@@ -308,10 +308,14 @@ const Index = () => {
       const payload = {};
       const errors = [];
       predictionColumns.forEach((columnName) => {
-        const value = predictionInputs[columnName];
-        if (!value) {
-          errors.push(`${columnName} is required`);
-        } else if (numericFeatures.includes(columnName)) {
+        const rawValue = predictionInputs[columnName];
+        const hasValue = String(rawValue ?? '').trim() !== '';
+        if (!hasValue) {
+          return;
+        }
+
+        if (numericFeatures.includes(columnName)) {
+          const value = String(rawValue ?? '').trim();
           const parsed = parsePredictionValue(value, columnName);
           if (parsed === null || isNaN(parsed)) {
             errors.push(`${columnName} must be a valid number`);
@@ -324,7 +328,7 @@ const Index = () => {
             payload[columnName] = parsed;
           }
         } else {
-          payload[columnName] = parsePredictionValue(value, columnName);
+          payload[columnName] = parsePredictionValue(rawValue, columnName);
         }
       });
       

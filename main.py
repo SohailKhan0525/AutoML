@@ -793,6 +793,7 @@ async def predict(
 
         model = pickle.loads(artifact["blob"])
         input_df = pd.DataFrame(records)
+        provided_columns = set(input_df.columns.tolist())
         expected_columns = artifact.get("feature_columns") or list(getattr(model, "feature_names_in_", []))
         if not expected_columns:
             raise HTTPException(status_code=500, detail="Model artifact is missing trained feature metadata.")
@@ -817,7 +818,7 @@ async def predict(
 
         numeric_errors: list[str] = []
         for col in numeric_features:
-            if col not in input_df.columns:
+            if col not in provided_columns:
                 continue
             invalid_rows = input_df[col].isna()
             if invalid_rows.any():
