@@ -9,12 +9,27 @@ from uuid import uuid4
 
 import numpy as np
 import pandas as pd
-from fastapi import Body, FastAPI, File, HTTPException, Query, Request, UploadFile
+from fastapi import Body, Depends, FastAPI, File, Header, HTTPException, Query, Request, UploadFile
 from fastapi.responses import JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from pydantic import BaseModel
+from sqlalchemy.orm import Session
 
 from ml_pipeline import analyze_dataset, optimize_dataframe_memory, run_ml_pipeline
+from models import User, get_db
+from auth import hash_password, verify_password, create_access_token, verify_token
+
+
+# Pydantic models for authentication
+class SignupRequest(BaseModel):
+    email: str
+    password: str
+
+
+class LoginRequest(BaseModel):
+    email: str
+    password: str
 
 app = FastAPI(title="AutoML Dataset Analyzer", version="0.1.0")
 
@@ -28,9 +43,9 @@ app.state.latest_dataset_id = None
 app.state.automl_lock = Lock()
 
 MAX_DATASETS_IN_MEMORY = 6
-MAX_FILE_SIZE_BYTES = 40 * 1024 * 1024
+MAX_FILE_SIZE_BYTES = 50 * 1024 * 1024
 MAX_ROWS = 100_000
-MAX_COLUMNS = 50
+MAX_COLUMNS = 200
 DATASET_TTL_SECONDS = 60 * 60
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -119,6 +134,99 @@ async def index(request: Request):
     return templates.TemplateResponse("index.html", {"request": request})
 
 
+@app.get("/signup")
+async def signup_page(request: Request):
+    """Serve signup page."""
+    return templates.TemplateResponse("signup.html", {"request": request})
+
+
+@app.get("/login")
+async def login_page(request: Request):
+    """Serve login page."""
+    return templates.TemplateResponse("login.html", {"request": request})
+
+
+@app.get("/dashboard")
+async def dashboard_page(request: Request):
+    """Serve dashboard page."""
+    return templates.TemplateResponse("dashboard.html", {"request": request})
+
+
+@app.post("/api/auth/signup")
+async def signup(request: SignupRequest, db: Session = Depends(get_db)):
+    """Sign up a new user."""
+    email = request.email.strip()
+    password = request.password
+
+    if not email or not password:
+        raise HTTPException(status_code=400, detail="Email and password required.")
+
+    if len(password) < 8:
+        raise HTTPException(status_code=400, detail="Password must be at least 8 characters.")
+
+    # Check if user already exists
+    existing_user = db.query(User).filter(User.email == email).first()
+    if existing_user:
+        raise HTTPException(status_code=400, detail="Email already registered.")
+
+    # Create new user
+    user_id = str(uuid4())
+    hashed_pw = hash_password(password)
+    user = User(id=user_id, email=email, hashed_password=hashed_pw)
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+
+    # Generate token
+    token = create_access_token(user.id, user.email)
+    logger.info("User signed up: %s", email)
+
+    return {"message": "Signup successful.", "token": token, "user": user.to_dict()}
+
+
+@app.post("/api/auth/login")
+async def login(request: LoginRequest, db: Session = Depends(get_db)):
+    """Log in a user."""
+    email = request.email.strip()
+    password = request.password
+
+    if not email or not password:
+        raise HTTPException(status_code=400, detail="Email and password required.")
+
+    user = db.query(User).filter(User.email == email).first()
+    if not user or not verify_password(password, user.hashed_password):
+        raise HTTPException(status_code=401, detail="Invalid email or password.")
+
+    token = create_access_token(user.id, user.email)
+    logger.info("User logged in: %s", email)
+
+    return {"message": "Login successful.", "token": token, "user": user.to_dict()}
+
+
+@app.post("/api/auth/verify")
+async def verify_auth(authorization: str | None = Header(None), db: Session = Depends(get_db)):
+    """Verify JWT token."""
+    if not authorization:
+        raise HTTPException(status_code=401, detail="Missing authorization header.")
+
+    # Extract token from "Bearer <token>"
+    parts = authorization.split()
+    if len(parts) != 2 or parts[0] != "Bearer":
+        raise HTTPException(status_code=401, detail="Invalid authorization header.")
+
+    token = parts[1]
+    payload = verify_token(token)
+    if not payload:
+        raise HTTPException(status_code=401, detail="Invalid or expired token.")
+
+    user_id = payload.get("sub")
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found.")
+
+    return {"valid": True, "user": user.to_dict()}
+
+
 @app.post("/upload")
 async def upload_dataset(file: UploadFile = File(...)):
     """Upload and validate CSV dataset with production-safe limits."""
@@ -133,7 +241,7 @@ async def upload_dataset(file: UploadFile = File(...)):
         file_size = file.file.tell()
         file.file.seek(0)
         if file_size > MAX_FILE_SIZE_BYTES:
-            raise HTTPException(status_code=400, detail="File too large. Max size is 40 MB.")
+            raise HTTPException(status_code=400, detail="File too large. Max size is 50 MB.")
 
         start = perf_counter()
         df = pd.read_csv(file.file)

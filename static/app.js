@@ -5,6 +5,7 @@ const exportReportBtn = document.getElementById("exportReportBtn");
 const downloadModelBtn = document.getElementById("downloadModelBtn");
 const refreshDatasetsBtn = document.getElementById("refreshDatasetsBtn");
 const targetColumnSelect = document.getElementById("targetColumnSelect");
+const predictBtn = document.getElementById("predictBtn");
 const dropZone = document.getElementById("dropZone");
 const errorBanner = document.getElementById("errorBanner");
 const appStatus = document.getElementById("appStatus");
@@ -14,6 +15,9 @@ const datasetName = document.getElementById("datasetName");
 const datasetStatus = document.getElementById("datasetStatus");
 const emptyState = document.getElementById("emptyState");
 const datasetHistoryList = document.getElementById("datasetHistoryList");
+const predictionFormContainer = document.getElementById("predictionFormContainer");
+const predictionOutput = document.getElementById("predictionOutput");
+const predictionStatus = document.getElementById("predictionStatus");
 
 const rowsValue = document.getElementById("rowsValue");
 const columnsValue = document.getElementById("columnsValue");
@@ -31,12 +35,13 @@ const correlationPairs = document.getElementById("correlationPairs");
 const tabLinks = document.querySelectorAll("[data-tab-link]");
 const tabContents = document.querySelectorAll("[data-tab-content]");
 
-const MAX_FILE_SIZE_BYTES = 40 * 1024 * 1024;
+const MAX_FILE_SIZE_BYTES = 50 * 1024 * 1024;
 
 let previewColumns = [];
 let previewRows = [];
 let activeDatasetId = null;
 let selectedFile = null;
+let predictionFeatures = [];
 
 function setStatus(message, isError = false) {
   appStatus.textContent = message;
@@ -135,8 +140,54 @@ function validateFile(file) {
     throw new Error("Only CSV files are supported.");
   }
   if (file.size > MAX_FILE_SIZE_BYTES) {
-    throw new Error("File too large. Max size is 40 MB.");
+    throw new Error("File too large. Max size is 50 MB.");
   }
+}
+
+function buildPredictionForm() {
+  if (!predictionFeatures.length) {
+    predictionFormContainer.innerHTML = '<p class="text-sm text-slate-500 md:col-span-2">Run AutoML to generate prediction inputs.</p>';
+    predictionStatus.textContent = "Awaiting model training.";
+    return;
+  }
+
+  const sampleRow = previewRows[0] || {};
+  predictionFormContainer.innerHTML = predictionFeatures
+    .map((feature) => {
+      const sampleValue = sampleRow[feature];
+      const isNumeric = typeof sampleValue === "number";
+      const inputType = isNumeric ? "number" : "text";
+      const placeholder = sampleValue === undefined || sampleValue === null ? "" : String(sampleValue);
+      return `
+      <label class="block">
+        <span class="text-xs font-medium text-slate-600 dark:text-slate-300">${feature}</span>
+        <input
+          class="mt-1 w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 px-3 py-2 text-sm"
+          type="${inputType}"
+          data-predict-field="${feature}"
+          placeholder="${placeholder}"
+        />
+      </label>`;
+    })
+    .join("");
+  predictionStatus.textContent = "Fill input values and click Predict.";
+}
+
+function collectPredictionRecord() {
+  const record = {};
+  const inputs = predictionFormContainer.querySelectorAll("[data-predict-field]");
+  inputs.forEach((input) => {
+    const key = input.getAttribute("data-predict-field");
+    if (!key) {
+      return;
+    }
+    const raw = input.value.trim();
+    if (raw === "") {
+      return;
+    }
+    record[key] = input.type === "number" ? Number(raw) : raw;
+  });
+  return record;
 }
 
 function renderPreview(columns, rows) {
@@ -271,6 +322,9 @@ function resetResultSections() {
   modelTableBody.innerHTML = '<tr><td class="px-6 py-4" colspan="6">No model results yet. Upload a dataset and run AutoML.</td></tr>';
   renderCorrelation(null);
   setPipelineNotes("Pipeline notes will appear here.");
+  predictionFeatures = [];
+  buildPredictionForm();
+  predictionOutput.textContent = "Predictions will appear here.";
 }
 
 function populateTargetSelector(columns, selected = "") {
@@ -386,6 +440,8 @@ async function runAutoml() {
 
     targetInfo.textContent = `Target: ${results.target_column}`;
     columnSplit.textContent = `${results.numeric_feature_count} numerical | ${results.categorical_feature_count} categorical`;
+    predictionFeatures = previewColumns.filter((col) => col !== results.target_column);
+    buildPredictionForm();
 
     renderFeatureImportance(results.feature_importance || []);
     renderLeaderboard(results.model_scores || []);
@@ -416,6 +472,42 @@ async function runAutoml() {
   } finally {
     runAutomlBtn.disabled = false;
     runAutomlBtn.classList.remove("opacity-60", "cursor-not-allowed");
+  }
+}
+
+async function runPrediction() {
+  if (!activeDatasetId) {
+    showError("Upload a dataset and run AutoML before prediction.");
+    return;
+  }
+
+  if (!predictionFeatures.length) {
+    showError("Prediction inputs are not ready. Run AutoML first.");
+    return;
+  }
+
+  try {
+    hideError();
+    predictionStatus.textContent = "Running prediction...";
+    predictBtn.disabled = true;
+    predictBtn.classList.add("opacity-60", "cursor-not-allowed");
+
+    const target = targetColumnSelect.value ? `&target_column=${encodeURIComponent(targetColumnSelect.value)}` : "";
+    const record = collectPredictionRecord();
+    const payload = await apiCall(`/predict?dataset_id=${encodeURIComponent(activeDatasetId)}${target}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify([record]),
+    });
+
+    predictionOutput.textContent = JSON.stringify(payload, null, 2);
+    predictionStatus.textContent = `Prediction complete (${payload.count} row).`;
+  } catch (error) {
+    showError(error.message);
+    predictionStatus.textContent = "Prediction failed.";
+  } finally {
+    predictBtn.disabled = false;
+    predictBtn.classList.remove("opacity-60", "cursor-not-allowed");
   }
 }
 
@@ -559,6 +651,7 @@ uploadBtn.addEventListener("click", handleUpload);
 runAutomlBtn.addEventListener("click", runAutoml);
 exportReportBtn.addEventListener("click", exportReport);
 downloadModelBtn.addEventListener("click", downloadModel);
+predictBtn.addEventListener("click", runPrediction);
 refreshDatasetsBtn.addEventListener("click", loadDatasetHistory);
 datasetHistoryList.addEventListener("click", handleHistoryClick);
 filterRowsInput.addEventListener("input", applyPreviewFilter);

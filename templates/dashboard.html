@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8"/>
+    <meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+    <script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet"/>
+    <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght@100..700,0..1&display=swap" rel="stylesheet"/>
+    <script id="tailwind-config">
+        tailwind.config = {
+            darkMode: "class",
+            theme: {
+                extend: {
+                    colors: {
+                        "primary": "#1349ec",
+                        "background-light": "#f6f6f8",
+                        "background-dark": "#101522",
+                    },
+                    fontFamily: {
+                        "display": ["Inter"]
+                    },
+                    borderRadius: {"DEFAULT": "0.25rem", "lg": "0.5rem", "xl": "0.75rem", "full": "9999px"},
+                },
+            },
+        }
+    </script>
+    <title>Dashboard - AutoML</title>
+    <style>
+        body {
+            min-height: 100dvh;
+        }
+    </style>
+</head>
+<body class="bg-background-light dark:bg-background-dark font-display text-slate-900 dark:text-slate-100">
+    <!-- Navbar -->
+    <nav class="border-b border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 mb-8">
+        <div class="px-6 py-4 flex items-center justify-between max-w-7xl mx-auto">
+            <div class="flex items-center gap-3">
+                <div class="inline-flex items-center justify-center w-10 h-10 bg-primary rounded-lg text-white">
+                    <span class="material-symbols-outlined text-lg">analytics</span>
+                </div>
+                <h1 class="text-xl font-bold">AutoML</h1>
+            </div>
+            <button id="logoutBtn" class="px-4 py-2 rounded-lg text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors flex items-center gap-2">
+                <span class="material-symbols-outlined">logout</span>
+                <span>Log Out</span>
+            </button>
+        </div>
+    </nav>
+
+    <!-- Main Content -->
+    <div class="max-w-2xl mx-auto px-6">
+        <!-- Loading State -->
+        <div id="loadingState" class="text-center py-12">
+            <span class="material-symbols-outlined text-4xl text-primary animate-spin inline-block">hourglass_empty</span>
+            <p class="text-slate-600 dark:text-slate-400 mt-4">Verifying your session...</p>
+        </div>
+
+        <!-- Dashboard Content -->
+        <div id="dashboardContent" class="hidden">
+            <!-- Welcome Card -->
+            <div class="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm p-8 mb-8">
+                <div class="flex items-center gap-4 mb-6">
+                    <div class="w-12 h-12 rounded-full bg-primary/10 text-primary flex items-center justify-center">
+                        <span class="material-symbols-outlined">person</span>
+                    </div>
+                    <div>
+                        <h2 class="text-2xl font-bold">Welcome!</h2>
+                        <p class="text-slate-600 dark:text-slate-400 text-sm mt-1" id="userEmail"></p>
+                    </div>
+                </div>
+                <p class="text-slate-600 dark:text-slate-400 leading-relaxed">
+                    You're successfully authenticated and ready to use AutoML. Start by uploading your dataset to begin your machine learning journey.
+                </p>
+            </div>
+
+            <!-- Quick Actions -->
+            <div class="space-y-4 mb-8">
+                <h3 class="text-lg font-semibold mb-4">Quick Actions</h3>
+                <a href="/" class="block p-6 bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm hover:shadow-md hover:border-primary dark:hover:border-primary transition-all group">
+                    <div class="flex items-center gap-4">
+                        <div class="w-10 h-10 rounded-lg bg-primary/10 text-primary group-hover:bg-primary group-hover:text-white transition-colors flex items-center justify-center">
+                            <span class="material-symbols-outlined">upload_file</span>
+                        </div>
+                        <div>
+                            <h4 class="font-semibold">Upload Dataset</h4>
+                            <p class="text-slate-500 dark:text-slate-400 text-sm">Start a new machine learning project</p>
+                        </div>
+                        <span class="material-symbols-outlined ml-auto text-slate-400 group-hover:text-primary transition-colors">arrow_forward</span>
+                    </div>
+                </a>
+
+                <a href="/" class="block p-6 bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm hover:shadow-md hover:border-primary dark:hover:border-primary transition-all group">
+                    <div class="flex items-center gap-4">
+                        <div class="w-10 h-10 rounded-lg bg-primary/10 text-primary group-hover:bg-primary group-hover:text-white transition-colors flex items-center justify-center">
+                            <span class="material-symbols-outlined">poll</span>
+                        </div>
+                        <div>
+                            <h4 class="font-semibold">Go to App</h4>
+                            <p class="text-slate-500 dark:text-slate-400 text-sm">Access the main AutoML interface</p>
+                        </div>
+                        <span class="material-symbols-outlined ml-auto text-slate-400 group-hover:text-primary transition-colors">arrow_forward</span>
+                    </div>
+                </a>
+            </div>
+
+            <!-- Account Info -->
+            <div class="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm p-8">
+                <h3 class="text-lg font-semibold mb-6">Account Information</h3>
+                <div class="space-y-4">
+                    <div class="flex items-center justify-between p-4 bg-slate-50 dark:bg-slate-800/50 rounded-lg">
+                        <div>
+                            <p class="text-slate-600 dark:text-slate-400 text-sm">Email Address</p>
+                            <p class="font-semibold" id="displayEmail"></p>
+                        </div>
+                        <span class="material-symbols-outlined text-slate-400">verified</span>
+                    </div>
+                    <div class="flex items-center justify-between p-4 bg-slate-50 dark:bg-slate-800/50 rounded-lg">
+                        <div>
+                            <p class="text-slate-600 dark:text-slate-400 text-sm">Account Status</p>
+                            <p class="font-semibold">Active</p>
+                        </div>
+                        <span class="material-symbols-outlined text-green-500">check_circle</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Error State -->
+        <div id="errorState" class="hidden text-center py-12">
+            <span class="material-symbols-outlined text-6xl text-red-500 inline-block mb-4">error</span>
+            <h2 class="text-2xl font-bold mb-2">Session Expired</h2>
+            <p class="text-slate-600 dark:text-slate-400 mb-6">Your session has expired or is invalid. Please log in again.</p>
+            <a href="/login" class="inline-flex items-center gap-2 px-6 py-3 bg-primary text-white rounded-lg font-semibold hover:opacity-90 transition-opacity">
+                <span class="material-symbols-outlined">login</span>
+                <span>Back to Login</span>
+            </a>
+        </div>
+    </div>
+
+    <script>
+        const loadingState = document.getElementById("loadingState");
+        const dashboardContent = document.getElementById("dashboardContent");
+        const errorState = document.getElementById("errorState");
+        const userEmailElement = document.getElementById("userEmail");
+        const displayEmailElement = document.getElementById("displayEmail");
+        const logoutBtn = document.getElementById("logoutBtn");
+
+        async function verifySession() {
+            const token = localStorage.getItem("token");
+            if (!token) {
+                showError();
+                return;
+            }
+
+            try {
+                const response = await fetch("/api/auth/verify", {
+                    method: "POST",
+                    headers: {
+                        "Authorization": `Bearer ${token}`,
+                        "Content-Type": "application/json"
+                    }
+                });
+
+                if (!response.ok) {
+                    showError();
+                    return;
+                }
+
+                const data = await response.json();
+                showDashboard(data.user.email);
+            } catch (err) {
+                showError();
+            }
+        }
+
+        function showDashboard(email) {
+            loadingState.classList.add("hidden");
+            errorState.classList.add("hidden");
+            dashboardContent.classList.remove("hidden");
+            
+            userEmailElement.textContent = email;
+            displayEmailElement.textContent = email;
+        }
+
+        function showError() {
+            loadingState.classList.add("hidden");
+            dashboardContent.classList.add("hidden");
+            errorState.classList.remove("hidden");
+        }
+
+        logoutBtn.addEventListener("click", () => {
+            localStorage.removeItem("token");
+            localStorage.removeItem("user");
+            window.location.href = "/login";
+        });
+
+        // Verify session on page load
+        verifySession();
+    </script>
+</body>
+</html>

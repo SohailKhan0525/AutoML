@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8"/>
+    <meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+    <script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet"/>
+    <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght@100..700,0..1&display=swap" rel="stylesheet"/>
+    <script id="tailwind-config">
+        tailwind.config = {
+            darkMode: "class",
+            theme: {
+                extend: {
+                    colors: {
+                        "primary": "#1349ec",
+                        "background-light": "#f6f6f8",
+                        "background-dark": "#101522",
+                    },
+                    fontFamily: {
+                        "display": ["Inter"]
+                    },
+                    borderRadius: {"DEFAULT": "0.25rem", "lg": "0.5rem", "xl": "0.75rem", "full": "9999px"},
+                },
+            },
+        }
+    </script>
+    <title>Log In - AutoML</title>
+    <style>
+        body {
+            min-height: 100dvh;
+        }
+    </style>
+</head>
+<body class="bg-background-light dark:bg-background-dark font-display text-slate-900 dark:text-slate-100 flex items-center justify-center">
+    <div class="w-full max-w-md px-6">
+        <!-- Logo & Header -->
+        <div class="text-center mb-8">
+            <div class="inline-flex items-center justify-center w-12 h-12 bg-primary rounded-lg text-white mb-4">
+                <span class="material-symbols-outlined">analytics</span>
+            </div>
+            <h1 class="text-3xl font-bold">AutoML</h1>
+            <p class="text-slate-500 dark:text-slate-400 mt-2">Welcome back</p>
+        </div>
+
+        <!-- Login Form -->
+        <div class="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm p-8 mb-6">
+            <form id="loginForm" class="space-y-5">
+                <!-- Email Input -->
+                <div class="relative">
+                    <input
+                        id="email"
+                        type="email"
+                        required
+                        class="peer w-full px-4 py-3 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary transition-colors"
+                        placeholder=" "
+                    />
+                    <label for="email" class="absolute left-4 top-3 text-slate-600 dark:text-slate-400 text-sm peer-placeholder-shown:top-3.5 peer-placeholder-shown:text-base peer-focus:top-1 peer-focus:text-xs peer-focus:text-primary transition-all pointer-events-none">
+                        Email Address
+                    </label>
+                    <span class="material-symbols-outlined absolute right-4 top-3.5 text-slate-400">mail</span>
+                </div>
+
+                <!-- Password Input -->
+                <div class="relative">
+                    <input
+                        id="password"
+                        type="password"
+                        required
+                        class="peer w-full px-4 py-3 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary transition-colors"
+                        placeholder=" "
+                    />
+                    <label for="password" class="absolute left-4 top-3 text-slate-600 dark:text-slate-400 text-sm peer-placeholder-shown:top-3.5 peer-placeholder-shown:text-base peer-focus:top-1 peer-focus:text-xs peer-focus:text-primary transition-all pointer-events-none">
+                        Password
+                    </label>
+                    <span class="material-symbols-outlined absolute right-4 top-3.5 text-slate-400">lock</span>
+                </div>
+
+                <!-- Error Message -->
+                <div id="errorMessage" class="hidden px-4 py-3 rounded-lg border border-red-200 dark:border-red-900/30 bg-red-50 dark:bg-red-900/10 text-red-700 dark:text-red-400 text-sm"></div>
+
+                <!-- Submit Button -->
+                <button
+                    type="submit"
+                    id="submitBtn"
+                    class="w-full bg-primary text-white py-3 rounded-lg font-semibold hover:opacity-90 transition-opacity flex items-center justify-center gap-2"
+                >
+                    <span class="material-symbols-outlined" id="submitIcon">login</span>
+                    <span id="submitText">Continue</span>
+                </button>
+            </form>
+        </div>
+
+        <!-- Signup Link -->
+        <p class="text-center text-slate-600 dark:text-slate-400 text-sm">
+            Don't have an account?
+            <a href="/signup" class="text-primary font-semibold hover:underline">Sign up</a>
+        </p>
+    </div>
+
+    <script>
+        const form = document.getElementById("loginForm");
+        const emailInput = document.getElementById("email");
+        const passwordInput = document.getElementById("password");
+        const errorMessage = document.getElementById("errorMessage");
+        const submitBtn = document.getElementById("submitBtn");
+        const submitText = document.getElementById("submitText");
+        const submitIcon = document.getElementById("submitIcon");
+
+        form.addEventListener("submit", async (e) => {
+            e.preventDefault();
+            errorMessage.classList.add("hidden");
+
+            const email = emailInput.value.trim();
+            const password = passwordInput.value;
+
+            // Validation
+            if (!email) {
+                showError("Email is required.");
+                return;
+            }
+
+            if (!email.includes("@")) {
+                showError("Please enter a valid email.");
+                return;
+            }
+
+            if (!password) {
+                showError("Password is required.");
+                return;
+            }
+
+            // Disable button & show loading
+            submitBtn.disabled = true;
+            submitBtn.classList.add("opacity-60");
+            submitText.textContent = "Logging in...";
+            submitIcon.textContent = "hourglass_empty";
+
+            try {
+                const response = await fetch("/api/auth/login", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ email, password }),
+                });
+
+                if (!response.ok) {
+                    const data = await response.json();
+                    throw new Error(data.detail || "Login failed. Check your credentials.");
+                }
+
+                const data = await response.json();
+                localStorage.setItem("token", data.token);
+                localStorage.setItem("user", JSON.stringify(data.user));
+
+                // Redirect to dashboard
+                window.location.href = "/dashboard";
+            } catch (err) {
+                showError(err.message);
+                submitBtn.disabled = false;
+                submitBtn.classList.remove("opacity-60");
+                submitText.textContent = "Continue";
+                submitIcon.textContent = "login";
+            }
+        });
+
+        function showError(message) {
+            errorMessage.textContent = message;
+            errorMessage.classList.remove("hidden");
+        }
+    </script>
+</body>
+</html>
