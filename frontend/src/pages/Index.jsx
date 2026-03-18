@@ -232,6 +232,19 @@ const Index = () => {
     return [];
   };
 
+  const getNumericLimits = (columnName) => {
+    if (!summary?.column_stats) return null;
+    const stats = summary.column_stats[columnName];
+    if (!stats) return null;
+    if (typeof stats.min !== 'number' || typeof stats.max !== 'number') return null;
+    return {
+      min: stats.min,
+      max: stats.max,
+      p01: typeof stats.p01 === 'number' ? stats.p01 : stats.min,
+      p99: typeof stats.p99 === 'number' ? stats.p99 : stats.max,
+    };
+  };
+
   useEffect(() => {
     if (predictionColumns.length === 0) {
       setPredictionInputs({});
@@ -303,6 +316,11 @@ const Index = () => {
           if (parsed === null || isNaN(parsed)) {
             errors.push(`${columnName} must be a valid number`);
           } else {
+            const limits = getNumericLimits(columnName);
+            if (limits && (parsed < limits.min || parsed > limits.max)) {
+              errors.push(`${columnName} must be between ${limits.min} and ${limits.max}`);
+              return;
+            }
             payload[columnName] = parsed;
           }
         } else {
@@ -683,6 +701,7 @@ const Index = () => {
                           const isCategorical = categoricalFeatures.includes(columnName);
                           const isNumeric = numericFeatures.includes(columnName);
                           const options = isCategorical ? getCategoricalOptions(columnName) : [];
+                          const numericLimits = isNumeric ? getNumericLimits(columnName) : null;
                           const useDropdown = isCategorical && options.length > 0;
                           
                           return (
@@ -710,8 +729,11 @@ const Index = () => {
                                   type="number"
                                   value={predictionInputs[columnName] ?? ''}
                                   onChange={(event) => handlePredictionInputChange(columnName, event.target.value)}
+                                  min={numericLimits?.min}
+                                  max={numericLimits?.max}
+                                  step="any"
                                   className="px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-sm"
-                                  placeholder={`Enter numeric value for ${columnName}`}
+                                  placeholder={numericLimits ? `Range ${numericLimits.min} to ${numericLimits.max}` : `Enter numeric value for ${columnName}`}
                                 />
                               ) : (
                                 <input
@@ -721,6 +743,9 @@ const Index = () => {
                                   className="px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-sm"
                                   placeholder={isCategorical ? `Enter ${columnName}` : `Enter value for ${columnName}`}
                                 />
+                              )}
+                              {isNumeric && numericLimits && (
+                                <span className="text-[10px] text-slate-500">Allowed range: {numericLimits.min} to {numericLimits.max}</span>
                               )}
                             </label>
                           );

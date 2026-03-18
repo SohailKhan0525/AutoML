@@ -651,6 +651,15 @@ async def run_automl(
                             return_best_model=True,
                         )
                         trained_features = ml_results.get("feature_metadata", {}).get("all_features", [])
+                        trained_numeric = ml_results.get("feature_metadata", {}).get("numeric_features", [])
+                        numeric_limits: dict[str, dict[str, float]] = {}
+                        for col in trained_numeric:
+                            col_series = pd.to_numeric(df[col], errors="coerce").replace([np.inf, -np.inf], np.nan).dropna()
+                            if not col_series.empty:
+                                numeric_limits[col] = {
+                                    "min": float(col_series.min()),
+                                    "max": float(col_series.max()),
+                                }
                         dataset["model_artifacts"][selected_target] = {
                             "blob": pickle.dumps(best_model),
                             "trained_at": time.time(),
@@ -658,6 +667,7 @@ async def run_automl(
                             "feature_columns": trained_features,
                             "categorical_features": ml_results.get("feature_metadata", {}).get("categorical_features", []),
                             "numeric_features": ml_results.get("feature_metadata", {}).get("numeric_features", []),
+                            "numeric_limits": numeric_limits,
                         }
                         logger.info(f"Rebuilt missing model artifact for {selected_target}")
                 else:
@@ -676,6 +686,15 @@ async def run_automl(
                     # Store model artifact immediately after training
                     logger.info(f"Storing model artifact for {selected_target}")
                     trained_features = ml_results.get("feature_metadata", {}).get("all_features", [])
+                    trained_numeric = ml_results.get("feature_metadata", {}).get("numeric_features", [])
+                    numeric_limits: dict[str, dict[str, float]] = {}
+                    for col in trained_numeric:
+                        col_series = pd.to_numeric(df[col], errors="coerce").replace([np.inf, -np.inf], np.nan).dropna()
+                        if not col_series.empty:
+                            numeric_limits[col] = {
+                                "min": float(col_series.min()),
+                                "max": float(col_series.max()),
+                            }
                     dataset["model_artifacts"][selected_target] = {
                         "blob": pickle.dumps(best_model),
                         "trained_at": time.time(),
@@ -683,6 +702,7 @@ async def run_automl(
                         "feature_columns": trained_features,
                         "categorical_features": ml_results.get("feature_metadata", {}).get("categorical_features", []),
                         "numeric_features": ml_results.get("feature_metadata", {}).get("numeric_features", []),
+                        "numeric_limits": numeric_limits,
                     }
                     logger.info(f"Model artifact stored successfully. Artifacts keys: {list(dataset['model_artifacts'].keys())}")
         except ValueError as exc:
@@ -779,6 +799,7 @@ async def predict(
         
         categorical_features = artifact.get("categorical_features", [])
         numeric_features = artifact.get("numeric_features", [])
+        numeric_limits = artifact.get("numeric_limits", {})
         
         for col in expected_columns:
             if col not in input_df.columns:
@@ -793,6 +814,26 @@ async def predict(
                     input_df[col] = pd.to_numeric(input_df[col], errors="coerce")
                 except Exception:
                     pass
+
+        numeric_errors: list[str] = []
+        for col in numeric_features:
+            if col not in input_df.columns:
+                continue
+            invalid_rows = input_df[col].isna()
+            if invalid_rows.any():
+                numeric_errors.append(f"{col} must be numeric")
+                continue
+            limits = numeric_limits.get(col)
+            if limits:
+                min_val = limits.get("min")
+                max_val = limits.get("max")
+                below = input_df[col] < min_val if min_val is not None else pd.Series([False] * len(input_df))
+                above = input_df[col] > max_val if max_val is not None else pd.Series([False] * len(input_df))
+                if bool(below.any() or above.any()):
+                    numeric_errors.append(f"{col} must be between {min_val} and {max_val}")
+
+        if numeric_errors:
+            raise HTTPException(status_code=400, detail="; ".join(dict.fromkeys(numeric_errors)))
         
         input_df = input_df[expected_columns]
         

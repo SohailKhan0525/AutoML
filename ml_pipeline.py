@@ -35,12 +35,26 @@ def analyze_dataset(df: pd.DataFrame) -> dict[str, Any]:
     for col in df.columns:
         col_str = str(col)
         stats: dict[str, Any] = {"dtype": str(df[col].dtype)}
+        series = df[col]
+        numeric_series = pd.to_numeric(series, errors="coerce")
+        is_boolean = pd.api.types.is_bool_dtype(series)
+        is_numeric = (pd.api.types.is_numeric_dtype(series) and not is_boolean) or (
+            numeric_series.notna().sum() > 0 and not is_boolean
+        )
+
+        if is_numeric:
+            finite_values = numeric_series.replace([np.inf, -np.inf], np.nan).dropna()
+            if not finite_values.empty:
+                stats["min"] = float(finite_values.min())
+                stats["max"] = float(finite_values.max())
+                stats["p01"] = float(finite_values.quantile(0.01))
+                stats["p99"] = float(finite_values.quantile(0.99))
         
         # For categorical/object columns, get unique values
-        if df[col].dtype == 'object' or df[col].nunique() < 20:
-            unique_vals = df[col].dropna().unique().tolist()
+        if series.dtype == "object" or series.nunique() < 20:
+            unique_vals = series.dropna().astype(str).unique().tolist()
             # Limit to first 50 unique values for UI
-            stats["unique_values"] = [str(v) for v in unique_vals[:50]]
+            stats["unique_values"] = unique_vals[:50]
             stats["unique_count"] = len(unique_vals)
         
         column_stats[col_str] = stats
