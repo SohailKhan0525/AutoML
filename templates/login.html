@@ -6,6 +6,7 @@
     <script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet"/>
     <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght@100..700,0..1&display=swap" rel="stylesheet"/>
+    <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" rel="stylesheet"/>
     <script id="tailwind-config">
         tailwind.config = {
             darkMode: "class",
@@ -24,10 +25,25 @@
             },
         }
     </script>
-    <title>Log In - AutoML</title>
+    <title>Sign In - AutoML</title>
     <style>
         body {
             min-height: 100dvh;
+        }
+
+        .material-symbols-outlined {
+            font-family: "Material Symbols Outlined";
+            font-weight: normal;
+            font-style: normal;
+            font-size: 24px;
+            line-height: 1;
+            letter-spacing: normal;
+            text-transform: none;
+            display: inline-block;
+            white-space: nowrap;
+            word-wrap: normal;
+            direction: ltr;
+            font-variation-settings: "FILL" 0, "wght" 500, "GRAD" 0, "opsz" 24;
         }
     </style>
 </head>
@@ -39,40 +55,44 @@
                 <span class="material-symbols-outlined">analytics</span>
             </div>
             <h1 class="text-3xl font-bold">AutoML</h1>
-            <p class="text-slate-500 dark:text-slate-400 mt-2">Welcome back</p>
+            <p class="text-slate-500 dark:text-slate-400 mt-2">Sign in to your account</p>
         </div>
 
         <!-- Login Form -->
         <div class="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm p-8 mb-6">
             <form id="loginForm" class="space-y-5">
                 <!-- Email Input -->
-                <div class="relative">
-                    <input
-                        id="email"
-                        type="email"
-                        required
-                        class="peer w-full px-4 py-3 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary transition-colors"
-                        placeholder=" "
-                    />
-                    <label for="email" class="absolute left-4 top-3 text-slate-600 dark:text-slate-400 text-sm peer-placeholder-shown:top-3.5 peer-placeholder-shown:text-base peer-focus:top-1 peer-focus:text-xs peer-focus:text-primary transition-all pointer-events-none">
+                <div>
+                    <label for="email" class="block text-sm font-semibold text-slate-700 dark:text-slate-300 mb-2">
                         Email Address
                     </label>
-                    <span class="material-symbols-outlined absolute right-4 top-3.5 text-slate-400">mail</span>
+                    <div class="relative">
+                        <input
+                            id="email"
+                            type="email"
+                            required
+                            class="w-full pl-4 pr-11 py-3 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary transition-colors"
+                            placeholder="name@example.com"
+                        />
+                        <span class="material-symbols-outlined absolute right-4 top-1/2 -translate-y-1/2 text-slate-400">mail</span>
+                    </div>
                 </div>
 
                 <!-- Password Input -->
-                <div class="relative">
-                    <input
-                        id="password"
-                        type="password"
-                        required
-                        class="peer w-full px-4 py-3 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary transition-colors"
-                        placeholder=" "
-                    />
-                    <label for="password" class="absolute left-4 top-3 text-slate-600 dark:text-slate-400 text-sm peer-placeholder-shown:top-3.5 peer-placeholder-shown:text-base peer-focus:top-1 peer-focus:text-xs peer-focus:text-primary transition-all pointer-events-none">
+                <div>
+                    <label for="password" class="block text-sm font-semibold text-slate-700 dark:text-slate-300 mb-2">
                         Password
                     </label>
-                    <span class="material-symbols-outlined absolute right-4 top-3.5 text-slate-400">lock</span>
+                    <div class="relative">
+                        <input
+                            id="password"
+                            type="password"
+                            required
+                            class="w-full pl-4 pr-11 py-3 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary transition-colors"
+                            placeholder="Enter your password"
+                        />
+                        <span class="material-symbols-outlined absolute right-4 top-1/2 -translate-y-1/2 text-slate-400">lock</span>
+                    </div>
                 </div>
 
                 <!-- Error Message -->
@@ -85,15 +105,15 @@
                     class="w-full bg-primary text-white py-3 rounded-lg font-semibold hover:opacity-90 transition-opacity flex items-center justify-center gap-2"
                 >
                     <span class="material-symbols-outlined" id="submitIcon">login</span>
-                    <span id="submitText">Continue</span>
+                    <span id="submitText">Sign In</span>
                 </button>
             </form>
         </div>
 
-        <!-- Signup Link -->
+        <!-- Sign Up Link -->
         <p class="text-center text-slate-600 dark:text-slate-400 text-sm">
             Don't have an account?
-            <a href="/signup" class="text-primary font-semibold hover:underline">Sign up</a>
+            <a href="/signup" class="text-primary font-semibold hover:underline">Sign Up</a>
         </p>
     </div>
 
@@ -144,20 +164,20 @@
 
                 if (!response.ok) {
                     const data = await response.json();
-                    throw new Error(data.detail || "Login failed. Check your credentials.");
+                    throw new Error(data.detail || "Sign in failed. Check your credentials.");
                 }
 
                 const data = await response.json();
                 localStorage.setItem("token", data.token);
                 localStorage.setItem("user", JSON.stringify(data.user));
 
-                // Redirect to dashboard
-                window.location.href = "/dashboard";
+                // Redirect to dashboard for a short success view, then dashboard will navigate to index.
+                window.location.href = "/dashboard.html?auto=1";
             } catch (err) {
                 showError(err.message);
                 submitBtn.disabled = false;
                 submitBtn.classList.remove("opacity-60");
-                submitText.textContent = "Continue";
+                submitText.textContent = "Sign In";
                 submitIcon.textContent = "login";
             }
         });

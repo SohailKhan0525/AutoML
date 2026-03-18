@@ -6,6 +6,7 @@
     <script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet"/>
     <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght@100..700,0..1&display=swap" rel="stylesheet"/>
+    <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" rel="stylesheet"/>
     <script id="tailwind-config">
         tailwind.config = {
             darkMode: "class",
@@ -28,6 +29,21 @@
     <style>
         body {
             min-height: 100dvh;
+        }
+
+        .material-symbols-outlined {
+            font-family: "Material Symbols Outlined";
+            font-weight: normal;
+            font-style: normal;
+            font-size: 24px;
+            line-height: 1;
+            letter-spacing: normal;
+            text-transform: none;
+            display: inline-block;
+            white-space: nowrap;
+            word-wrap: normal;
+            direction: ltr;
+            font-variation-settings: "FILL" 0, "wght" 500, "GRAD" 0, "opsz" 24;
         }
     </style>
 </head>
@@ -58,6 +74,9 @@
 
         <!-- Dashboard Content -->
         <div id="dashboardContent" class="hidden">
+            <div id="autoRedirectNotice" class="hidden mb-4 px-4 py-3 rounded-lg border border-blue-200 dark:border-blue-900/30 bg-blue-50 dark:bg-blue-900/10 text-blue-700 dark:text-blue-300 text-sm">
+                Sign in successful. Redirecting you to the main dashboard in 8 seconds...
+            </div>
             <!-- Welcome Card -->
             <div class="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm p-8 mb-8">
                 <div class="flex items-center gap-4 mb-6">
@@ -130,10 +149,10 @@
         <div id="errorState" class="hidden text-center py-12">
             <span class="material-symbols-outlined text-6xl text-red-500 inline-block mb-4">error</span>
             <h2 class="text-2xl font-bold mb-2">Session Expired</h2>
-            <p class="text-slate-600 dark:text-slate-400 mb-6">Your session has expired or is invalid. Please log in again.</p>
-            <a href="/login" class="inline-flex items-center gap-2 px-6 py-3 bg-primary text-white rounded-lg font-semibold hover:opacity-90 transition-opacity">
+            <p class="text-slate-600 dark:text-slate-400 mb-6">Your session has expired or is invalid. Please sign in again.</p>
+            <a href="/signin" class="inline-flex items-center gap-2 px-6 py-3 bg-primary text-white rounded-lg font-semibold hover:opacity-90 transition-opacity">
                 <span class="material-symbols-outlined">login</span>
-                <span>Back to Login</span>
+                <span>Back to Sign In</span>
             </a>
         </div>
     </div>
@@ -145,6 +164,9 @@
         const userEmailElement = document.getElementById("userEmail");
         const displayEmailElement = document.getElementById("displayEmail");
         const logoutBtn = document.getElementById("logoutBtn");
+        const autoRedirectNotice = document.getElementById("autoRedirectNotice");
+        const shouldAutoRedirect = new URLSearchParams(window.location.search).get("auto") === "1";
+        let redirectScheduled = false;
 
         async function verifySession() {
             const token = localStorage.getItem("token");
@@ -181,6 +203,14 @@
             
             userEmailElement.textContent = email;
             displayEmailElement.textContent = email;
+
+            if (shouldAutoRedirect && !redirectScheduled) {
+                redirectScheduled = true;
+                autoRedirectNotice.classList.remove("hidden");
+                setTimeout(() => {
+                    window.location.href = "/index.html";
+                }, 8000);
+            }
         }
 
         function showError() {
@@ -192,7 +222,7 @@
         logoutBtn.addEventListener("click", () => {
             localStorage.removeItem("token");
             localStorage.removeItem("user");
-            window.location.href = "/login";
+            window.location.href = "/signin";
         });
 
         // Verify session on page load

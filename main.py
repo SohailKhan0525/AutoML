@@ -1,18 +1,19 @@
 import json
 import logging
 import pickle
+import re
 import time
 from asyncio import Lock
 from time import perf_counter
 from typing import Any
 from uuid import uuid4
+import os
 
 import numpy as np
 import pandas as pd
 from fastapi import Body, Depends, FastAPI, File, Header, HTTPException, Query, Request, UploadFile
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import JSONResponse, Response, FileResponse
 from fastapi.staticfiles import StaticFiles
-from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -31,10 +32,18 @@ class LoginRequest(BaseModel):
     email: str
     password: str
 
+
+class ChangePasswordRequest(BaseModel):
+    current_password: str
+    new_password: str
+
 app = FastAPI(title="AutoML Dataset Analyzer", version="0.1.0")
 
-templates = Jinja2Templates(directory="templates")
-app.mount("/static", StaticFiles(directory="static"), name="static")
+# Serve React static assets
+react_dist_path = os.path.join(os.path.dirname(__file__), "static", "dist")
+if os.path.exists(react_dist_path):
+    app.mount("/assets", StaticFiles(directory=os.path.join(react_dist_path, "assets")), name="assets")
+
 
 # In-memory storage for MVP workflow (single active dataset per app instance).
 app.state.datasets = {}
@@ -47,6 +56,8 @@ MAX_FILE_SIZE_BYTES = 50 * 1024 * 1024
 MAX_ROWS = 100_000
 MAX_COLUMNS = 200
 DATASET_TTL_SECONDS = 60 * 60
+MAX_EMAIL_LENGTH = 254
+MAX_PASSWORD_LENGTH = 128
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger("automl")
@@ -57,7 +68,15 @@ async def unhandled_exception_handler(request: Request, exc: Exception):
     logger.exception("Unhandled server error on %s", request.url.path)
     return JSONResponse(
         status_code=500,
-        content={"error": "Internal server error. Please retry or check server logs."},
+        content={"detail": "Internal server error. Please retry or check server logs."},
+    )
+
+
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request: Request, exc: HTTPException):
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"detail": exc.detail},
     )
 
 
@@ -129,93 +148,45 @@ def _get_dataset(dataset_id: str | None):
     return dataset
 
 
-@app.get("/")
-async def index(request: Request):
-    return templates.TemplateResponse("index.html", {"request": request})
+def _normalize_email(email: str) -> str:
+    return email.strip().lower()
 
 
-@app.get("/landing")
-async def landing_page(request: Request):
-    """Serve landing page for global users."""
-    return templates.TemplateResponse("landing.html", {"request": request})
+def _is_valid_email(email: str) -> bool:
+    if len(email) > MAX_EMAIL_LENGTH:
+        return False
+    return re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", email) is not None
 
 
-@app.get("/signup")
-async def signup_page(request: Request):
-    """Serve signup page."""
-    return templates.TemplateResponse("signup.html", {"request": request})
-
-
-@app.get("/login")
-async def login_page(request: Request):
-    """Serve login page."""
-    return templates.TemplateResponse("login.html", {"request": request})
-
-
-@app.get("/dashboard")
-async def dashboard_page(request: Request):
-    """Serve dashboard page."""
-    return templates.TemplateResponse("dashboard.html", {"request": request})
-
-
-@app.post("/api/auth/signup")
-async def signup(request: SignupRequest, db: Session = Depends(get_db)):
-    """Sign up a new user."""
-    email = request.email.strip()
-    password = request.password
-
-    if not email or not password:
-        raise HTTPException(status_code=400, detail="Email and password required.")
-
+def _validate_password_strength(password: str) -> None:
     if len(password) < 8:
         raise HTTPException(status_code=400, detail="Password must be at least 8 characters.")
+    if len(password) > MAX_PASSWORD_LENGTH:
+        raise HTTPException(status_code=400, detail="Password is too long.")
+    if not re.search(r"[A-Z]", password):
+        raise HTTPException(status_code=400, detail="Password must contain an uppercase letter.")
+    if not re.search(r"[a-z]", password):
+        raise HTTPException(status_code=400, detail="Password must contain a lowercase letter.")
+    if not re.search(r"\d", password):
+        raise HTTPException(status_code=400, detail="Password must contain a number.")
 
-    # Check if user already exists
-    existing_user = db.query(User).filter(User.email == email).first()
-    if existing_user:
-        raise HTTPException(status_code=400, detail="Email already registered.")
 
-    # Create new user
-    user_id = str(uuid4())
-    hashed_pw = hash_password(password)
-    user = User(id=user_id, email=email, hashed_password=hashed_pw)
-    db.add(user)
-    db.commit()
-    db.refresh(user)
-
-    # Generate token
+def _build_auth_response(user: User, message: str) -> dict[str, Any]:
     token = create_access_token(user.id, user.email)
-    logger.info("User signed up: %s", email)
-
-    return {"message": "Signup successful.", "token": token, "user": user.to_dict()}
+    return {"message": message, "token": token, "user": user.to_dict()}
 
 
-@app.post("/api/auth/login")
-async def login(request: LoginRequest, db: Session = Depends(get_db)):
-    """Log in a user."""
-    email = request.email.strip()
-    password = request.password
-
-    if not email or not password:
-        raise HTTPException(status_code=400, detail="Email and password required.")
-
+def _authenticate_user(email: str, password: str, db: Session) -> User:
     user = db.query(User).filter(User.email == email).first()
     if not user or not verify_password(password, user.hashed_password):
         raise HTTPException(status_code=401, detail="Invalid email or password.")
-
-    token = create_access_token(user.id, user.email)
-    logger.info("User logged in: %s", email)
-
-    return {"message": "Login successful.", "token": token, "user": user.to_dict()}
+    return user
 
 
-@app.post("/api/auth/verify")
-async def verify_auth(authorization: str | None = Header(None), db: Session = Depends(get_db)):
-    """Verify JWT token."""
+def _resolve_user_from_auth_header(authorization: str | None, db: Session) -> User:
     if not authorization:
         raise HTTPException(status_code=401, detail="Missing authorization header.")
 
-    # Extract token from "Bearer <token>"
     parts = authorization.split()
     if len(parts) != 2 or parts[0] != "Bearer":
         raise HTTPException(status_code=401, detail="Invalid authorization header.")
@@ -230,7 +201,115 @@ async def verify_auth(authorization: str | None = Header(None), db: Session = De
     if not user:
         raise HTTPException(status_code=404, detail="User not found.")
 
+    return user
+
+
+@app.post("/api/auth/signup")
+async def signup(request: SignupRequest, db: Session = Depends(get_db)):
+    """Sign up a new user."""
+    email = _normalize_email(request.email)
+    password = request.password
+
+    if not email or not password:
+        raise HTTPException(status_code=400, detail="Email and password required.")
+
+    if not _is_valid_email(email):
+        raise HTTPException(status_code=400, detail="Please provide a valid email address.")
+
+    _validate_password_strength(password)
+
+    # Check if user already exists
+    existing_user = db.query(User).filter(User.email == email).first()
+    if existing_user:
+        raise HTTPException(status_code=400, detail="Email already registered.")
+
+    # Create new user
+    user_id = str(uuid4())
+    hashed_pw = hash_password(password)
+    user = User(id=user_id, email=email, hashed_password=hashed_pw)
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+
+    logger.info("User signed up: %s", email)
+
+    return _build_auth_response(user, "Signup successful.")
+
+
+@app.post("/api/auth/login")
+async def login(request: LoginRequest, db: Session = Depends(get_db)):
+    """Log in a user."""
+    email = _normalize_email(request.email)
+    password = request.password
+
+    if not email or not password:
+        raise HTTPException(status_code=400, detail="Email and password required.")
+
+    user = _authenticate_user(email, password, db)
+    logger.info("User logged in: %s", email)
+
+    return _build_auth_response(user, "Login successful.")
+
+
+@app.post("/api/auth/signin")
+async def signin(request: LoginRequest, db: Session = Depends(get_db)):
+    """Sign in a user (alias for login)."""
+    email = _normalize_email(request.email)
+    password = request.password
+
+    if not email or not password:
+        raise HTTPException(status_code=400, detail="Email and password required.")
+
+    user = _authenticate_user(email, password, db)
+    logger.info("User signed in: %s", email)
+
+    return _build_auth_response(user, "Sign in successful.")
+
+
+@app.post("/api/auth/verify")
+async def verify_auth(authorization: str | None = Header(None), db: Session = Depends(get_db)):
+    """Verify JWT token."""
+    user = _resolve_user_from_auth_header(authorization, db)
+
     return {"valid": True, "user": user.to_dict()}
+
+
+@app.post("/api/auth/change-password")
+async def change_password(
+    request: ChangePasswordRequest,
+    authorization: str | None = Header(None),
+    db: Session = Depends(get_db),
+):
+    """Change the authenticated user's password."""
+    user = _resolve_user_from_auth_header(authorization, db)
+
+    if not request.current_password or not request.new_password:
+        raise HTTPException(status_code=400, detail="Current and new password are required.")
+
+    if request.current_password == request.new_password:
+        raise HTTPException(status_code=400, detail="New password must be different from current password.")
+
+    if not verify_password(request.current_password, user.hashed_password):
+        raise HTTPException(status_code=401, detail="Current password is incorrect.")
+
+    _validate_password_strength(request.new_password)
+
+    user.hashed_password = hash_password(request.new_password)
+    db.add(user)
+    db.commit()
+
+    logger.info("Password changed for user: %s", user.email)
+    return {"message": "Password updated successfully."}
+
+
+@app.get("/api/health")
+async def health_check():
+    """Lightweight runtime health endpoint for uptime checks."""
+    return {
+        "status": "ok",
+        "service": "automl-api",
+        "datasets_in_memory": len(app.state.datasets),
+    }
 
 
 @app.post("/upload")
@@ -524,6 +603,26 @@ async def legacy_upload(file: UploadFile = File(...)):
     }
 
 
-@app.exception_handler(HTTPException)
-async def http_exception_handler(_request: Request, exc: HTTPException):
-    return JSONResponse(status_code=exc.status_code, content={"error": exc.detail})
+# Catch-all route to serve React index.html for client-side routing
+@app.get("/")
+async def serve_root():
+    """Serve React index.html at root."""
+    index_file = os.path.join(react_dist_path, "index.html")
+    if os.path.exists(index_file):
+        return FileResponse(index_file)
+    
+    raise HTTPException(status_code=404, detail="React app not found. Please build the frontend first.")
+
+
+@app.get("/{full_path:path}")
+async def serve_react_app(full_path: str):
+    """Serve React index.html for all non-API routes to enable client-side routing."""
+    # Don't interfere with actual files and API routes
+    if full_path.startswith("api") or "." in full_path:
+        raise HTTPException(status_code=404, detail="Not Found")
+    
+    index_file = os.path.join(react_dist_path, "index.html")
+    if os.path.exists(index_file):
+        return FileResponse(index_file)
+    
+    raise HTTPException(status_code=404, detail="React app not found. Please build the frontend first.")

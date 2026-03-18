@@ -6,6 +6,7 @@
     <script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet"/>
     <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght@100..700,0..1&display=swap" rel="stylesheet"/>
+    <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" rel="stylesheet"/>
     <script id="tailwind-config">
         tailwind.config = {
             darkMode: "class",
@@ -25,6 +26,22 @@
         }
     </script>
     <title>AutoML - Turn Your Dataset into ML Insights</title>
+    <style>
+        .material-symbols-outlined {
+            font-family: "Material Symbols Outlined";
+            font-weight: normal;
+            font-style: normal;
+            font-size: 24px;
+            line-height: 1;
+            letter-spacing: normal;
+            text-transform: none;
+            display: inline-block;
+            white-space: nowrap;
+            word-wrap: normal;
+            direction: ltr;
+            font-variation-settings: "FILL" 0, "wght" 500, "GRAD" 0, "opsz" 24;
+        }
+    </style>
 </head>
 <body class="bg-background-light dark:bg-background-dark font-display text-slate-900 dark:text-slate-100">
     <!-- Navigation -->
@@ -40,7 +57,7 @@
                 <a href="#features" class="text-slate-600 dark:text-slate-300 hover:text-primary transition-colors">Features</a>
                 <a href="#how-it-works" class="text-slate-600 dark:text-slate-300 hover:text-primary transition-colors">How it Works</a>
                 <a href="#pricing" class="text-slate-600 dark:text-slate-300 hover:text-primary transition-colors">Pricing</a>
-                <a href="/signup" class="px-4 py-2 rounded-lg bg-primary text-white hover:opacity-90 transition-opacity">Get Started</a>
+                <a href="/signup" class="px-4 py-2 rounded-lg bg-primary text-white hover:opacity-90 transition-opacity">Sign Up</a>
             </div>
         </div>
     </nav>
@@ -238,9 +255,9 @@
                         </li>
                     </ul>
 
-                    <button class="w-full py-3 rounded-lg border-2 border-primary text-primary font-semibold hover:bg-primary hover:text-white transition-colors">
+                    <a href="/signup" class="w-full inline-flex items-center justify-center py-3 rounded-lg border-2 border-primary text-primary font-semibold hover:bg-primary hover:text-white transition-colors">
                         Get Started Free
-                    </button>
+                    </a>
                 </div>
 
                 <!-- Pro Plan -->
@@ -282,7 +299,7 @@
                         </li>
                     </ul>
 
-                    <button class="w-full py-3 rounded-lg bg-primary text-white font-semibold hover:opacity-90 transition-opacity" disabled>
+                    <button type="button" class="w-full py-3 rounded-lg bg-primary text-white font-semibold hover:opacity-90 transition-opacity" disabled>
                         Coming Soon
                     </button>
                 </div>
