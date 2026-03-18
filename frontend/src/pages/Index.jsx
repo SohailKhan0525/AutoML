@@ -211,6 +211,23 @@ const Index = () => {
     return summary.column_names.filter((columnName) => columnName !== resolvedTargetColumn);
   }, [summary, resolvedTargetColumn]);
 
+  const categoricalFeatures = useMemo(() => {
+    return mlResults?.feature_metadata?.categorical_features || [];
+  }, [mlResults]);
+
+  const numericFeatures = useMemo(() => {
+    return mlResults?.feature_metadata?.numeric_features || [];
+  }, [mlResults]);
+
+  const getCategoricalOptions = (columnName) => {
+    if (!summary?.column_stats) return [];
+    const stats = summary.column_stats[columnName];
+    if (stats?.unique_values && Array.isArray(stats.unique_values)) {
+      return stats.unique_values.slice(0, 100);
+    }
+    return [];
+  };
+
   useEffect(() => {
     if (predictionColumns.length === 0) {
       setPredictionInputs({});
@@ -226,9 +243,20 @@ const Index = () => {
     });
   }, [predictionColumns]);
 
-  const parsePredictionValue = (rawValue) => {
+  const parsePredictionValue = (rawValue, columnName) => {
     const normalized = String(rawValue ?? '').trim();
     if (!normalized) return null;
+    
+    if (categoricalFeatures.includes(columnName)) {
+      return normalized;
+    }
+    
+    if (numericFeatures.includes(columnName)) {
+      const num = Number(normalized);
+      if (isNaN(num)) return null;
+      return num;
+    }
+    
     if (/^-?\d+(\.\d+)?$/.test(normalized)) return Number(normalized);
     if (normalized.toLowerCase() === 'true') return true;
     if (normalized.toLowerCase() === 'false') return false;
@@ -261,9 +289,28 @@ const Index = () => {
       }
 
       const payload = {};
+      const errors = [];
       predictionColumns.forEach((columnName) => {
-        payload[columnName] = parsePredictionValue(predictionInputs[columnName]);
+        const value = predictionInputs[columnName];
+        if (!value) {
+          errors.push(`${columnName} is required`);
+        } else if (numericFeatures.includes(columnName)) {
+          const parsed = parsePredictionValue(value, columnName);
+          if (parsed === null || isNaN(parsed)) {
+            errors.push(`${columnName} must be a valid number`);
+          } else {
+            payload[columnName] = parsed;
+          }
+        } else {
+          payload[columnName] = parsePredictionValue(value, columnName);
+        }
       });
+      
+      if (errors.length > 0) {
+        setPageError(`Validation errors: ${errors.join(', ')}`);
+        setIsPredicting(false);
+        return;
+      }
 
       const response = await fetch(`/predict?${queryParams.toString()}`, {
         method: 'POST',
@@ -628,17 +675,42 @@ const Index = () => {
                       {predictionColumns.length === 0 ? (
                         <p className="text-sm text-slate-500 md:col-span-2">No feature columns available for prediction.</p>
                       ) : (
-                        predictionColumns.map((columnName) => (
-                          <label key={columnName} className="flex flex-col gap-1 text-xs">
-                            <span className="text-slate-600 dark:text-slate-300">{columnName}</span>
-                            <input
-                              value={predictionInputs[columnName] ?? ''}
-                              onChange={(event) => handlePredictionInputChange(columnName, event.target.value)}
-                              className="px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-sm"
-                              placeholder={`Enter ${columnName}`}
-                            />
-                          </label>
-                        ))
+                        predictionColumns.map((columnName) => {
+                          const isCategorical = categoricalFeatures.includes(columnName);
+                          const options = isCategorical ? getCategoricalOptions(columnName) : [];
+                          
+                          return (
+                            <label key={columnName} className="flex flex-col gap-1 text-xs">
+                              <span className="text-slate-600 dark:text-slate-300">
+                                {columnName}
+                                {isCategorical && <span className="text-xs text-slate-500 ml-1">(categorical)</span>}
+                                {numericFeatures.includes(columnName) && <span className="text-xs text-slate-500 ml-1">(numeric)</span>}
+                              </span>
+                              {isCategorical ? (
+                                <select
+                                  value={predictionInputs[columnName] ?? ''}
+                                  onChange={(event) => handlePredictionInputChange(columnName, event.target.value)}
+                                  className="px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-sm"
+                                >
+                                  <option value="">-- Select {columnName} --</option>
+                                  {options.map((opt) => (
+                                    <option key={opt} value={opt}>
+                                      {opt}
+                                    </option>
+                                  ))}
+                                </select>
+                              ) : (
+                                <input
+                                  type="number"
+                                  value={predictionInputs[columnName] ?? ''}
+                                  onChange={(event) => handlePredictionInputChange(columnName, event.target.value)}
+                                  className="px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-sm"
+                                  placeholder={`Enter numeric value for ${columnName}`}
+                                />
+                              )}
+                            </label>
+                          );
+                        })
                       )}
                     </div>
 

@@ -30,6 +30,21 @@ def analyze_dataset(df: pd.DataFrame) -> dict[str, Any]:
         for col, val in df.isna().sum().sort_values(ascending=False).items()
     }
 
+    # Collect column statistics for UI rendering (especially categorical dropdowns)
+    column_stats = {}
+    for col in df.columns:
+        col_str = str(col)
+        stats: dict[str, Any] = {"dtype": str(df[col].dtype)}
+        
+        # For categorical/object columns, get unique values
+        if df[col].dtype == 'object' or df[col].nunique() < 20:
+            unique_vals = df[col].dropna().unique().tolist()
+            # Limit to first 50 unique values for UI
+            stats["unique_values"] = [str(v) for v in unique_vals[:50]]
+            stats["unique_count"] = len(unique_vals)
+        
+        column_stats[col_str] = stats
+
     correlation_summary = {
         "available": False,
         "columns": [],
@@ -69,6 +84,7 @@ def analyze_dataset(df: pd.DataFrame) -> dict[str, Any]:
         "rows": int(df.shape[0]),
         "columns": int(df.shape[1]),
         "column_names": [str(col) for col in df.columns.tolist()],
+        "column_stats": column_stats,
         "missing_values_by_column": missing_by_column,
         "total_missing_values": int(df.isna().sum().sum()),
         "missing_percentage": round(float(df.isna().sum().sum() / df.size * 100), 4) if df.size else 0.0,
@@ -517,6 +533,12 @@ def run_ml_pipeline(
     best_model_name = model_scores[0]["model_name"]
     best_model = trained_models.get(best_model_name)
 
+    feature_metadata = {
+        "numeric_features": numeric_features,
+        "categorical_features": categorical_features,
+        "all_features": [c for c in df.columns if c != resolved_target],
+    }
+
     result = {
         "pricing_plan": normalized_plan,
         "workflow_mode": "Advanced Mode" if normalized_plan == "pro" else "Fast Mode",
@@ -558,6 +580,7 @@ def run_ml_pipeline(
         "hyperparameter_tuning": tuning_summary,
         "model_failures": model_failures,
         "feature_importance": feature_importance,
+        "feature_metadata": feature_metadata,
     }
 
     if return_best_model:

@@ -628,6 +628,7 @@ async def run_automl(
 
     cached_entry = dataset["automl_cache"].get(selected_target)
     automl_cache_hit = bool(cached_entry and cached_entry.get("plan") == pricing_plan)
+    
     if not automl_cache_hit:
         try:
             async with app.state.automl_lock:
@@ -636,6 +637,10 @@ async def run_automl(
                 if refreshed_cache_entry and refreshed_cache_entry.get("plan") == pricing_plan:
                     ml_results = refreshed_cache_entry["results"]
                     automl_cache_hit = True
+                    # Try to load model artifact if it exists
+                    if selected_target not in dataset["model_artifacts"]:
+                        # Model wasn't stored, create a placeholder
+                        logger.warning(f"Model artifact missing for {selected_target}, will be trained on next request")
                 else:
                     start = perf_counter()
                     ml_results, best_model = run_ml_pipeline(
@@ -649,12 +654,17 @@ async def run_automl(
                         "plan": pricing_plan,
                         "results": ml_results,
                     }
+                    # Store model artifact immediately after training
+                    logger.info(f"Storing model artifact for {selected_target}")
                     dataset["model_artifacts"][selected_target] = {
                         "blob": pickle.dumps(best_model),
                         "trained_at": time.time(),
                         "plan": pricing_plan,
                         "feature_columns": [c for c in df.columns if c != selected_target],
+                        "categorical_features": ml_results.get("feature_metadata", {}).get("categorical_features", []),
+                        "numeric_features": ml_results.get("feature_metadata", {}).get("numeric_features", []),
                     }
+                    logger.info(f"Model artifact stored successfully. Artifacts keys: {list(dataset['model_artifacts'].keys())}")
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except Exception as exc:
@@ -726,36 +736,58 @@ async def predict(
     records: list[dict[str, Any]] | dict[str, Any] = Body(...),
 ):
     """Run predictions with a previously trained model using JSON feature records."""
-    dataset = _get_dataset(dataset_id)
-    selected_target = target_column or (list(dataset["model_artifacts"].keys())[-1] if dataset["model_artifacts"] else None)
-    if not selected_target:
-        raise HTTPException(status_code=400, detail="No trained model available. Run AutoML first.")
+    try:
+        dataset = _get_dataset(dataset_id)
+        selected_target = target_column or (list(dataset["model_artifacts"].keys())[-1] if dataset["model_artifacts"] else None)
+        if not selected_target:
+            raise HTTPException(status_code=400, detail="No trained model available. Run AutoML first.")
 
-    artifact = dataset["model_artifacts"].get(selected_target)
-    if not artifact:
-        raise HTTPException(status_code=404, detail="No model artifact found for selected target.")
+        artifact = dataset["model_artifacts"].get(selected_target)
+        if not artifact:
+            raise HTTPException(status_code=404, detail="No model artifact found for selected target.")
 
-    if isinstance(records, dict):
-        records = [records]
-    if not records:
-        raise HTTPException(status_code=400, detail="Prediction payload is empty.")
+        if isinstance(records, dict):
+            records = [records]
+        if not records:
+            raise HTTPException(status_code=400, detail="Prediction payload is empty.")
 
-    model = pickle.loads(artifact["blob"])
-    input_df = pd.DataFrame(records)
-    expected_columns = artifact["feature_columns"]
-    for col in expected_columns:
-        if col not in input_df.columns:
-            input_df[col] = np.nan
-    input_df = input_df[expected_columns]
-
-    predictions = model.predict(input_df).tolist()
-    payload = {
-        "dataset_id": dataset_id,
-        "target_column": selected_target,
-        "count": len(predictions),
-        "predictions": predictions,
-    }
-    return _json_safe(payload)
+        model = pickle.loads(artifact["blob"])
+        input_df = pd.DataFrame(records)
+        expected_columns = artifact["feature_columns"]
+        
+        categorical_features = artifact.get("categorical_features", [])
+        numeric_features = artifact.get("numeric_features", [])
+        
+        for col in expected_columns:
+            if col not in input_df.columns:
+                input_df[col] = np.nan
+            elif col in categorical_features:
+                try:
+                    input_df[col] = input_df[col].astype(str).replace("nan", np.nan)
+                except Exception:
+                    pass
+            elif col in numeric_features:
+                try:
+                    input_df[col] = pd.to_numeric(input_df[col], errors="coerce")
+                except Exception:
+                    pass
+        
+        input_df = input_df[expected_columns]
+        
+        predictions = model.predict(input_df).tolist()
+        payload = {
+            "dataset_id": dataset_id,
+            "target_column": selected_target,
+            "count": len(predictions),
+            "predictions": predictions,
+            "success": True,
+        }
+        return _json_safe(payload)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("Prediction error")
+        raise HTTPException(status_code=500, detail=f"Prediction failed: {exc}") from exc
 
 
 @app.delete("/dataset")
