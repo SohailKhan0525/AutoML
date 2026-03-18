@@ -834,6 +834,7 @@ async def predict(
         numeric_features = artifact.get("numeric_features", [])
         numeric_limits = artifact.get("numeric_limits", {})
         unknown_columns = sorted([col for col in provided_columns if col not in set(expected_columns)])
+        clipped_numeric: dict[str, dict[str, float]] = {}
         
         for col in expected_columns:
             if col not in input_df.columns:
@@ -861,10 +862,19 @@ async def predict(
             if limits:
                 min_val = limits.get("min")
                 max_val = limits.get("max")
-                below = input_df[col] < min_val if min_val is not None else pd.Series([False] * len(input_df))
-                above = input_df[col] > max_val if max_val is not None else pd.Series([False] * len(input_df))
-                if bool(below.any() or above.any()):
-                    numeric_errors.append(f"{col} must be between {min_val} and {max_val}")
+                if min_val is not None or max_val is not None:
+                    original_col = input_df[col].copy()
+                    if min_val is not None:
+                        input_df[col] = input_df[col].clip(lower=min_val)
+                    if max_val is not None:
+                        input_df[col] = input_df[col].clip(upper=max_val)
+                    changed_rows = int((input_df[col] != original_col).sum())
+                    if changed_rows > 0:
+                        clipped_numeric[col] = {
+                            "min": float(min_val) if min_val is not None else None,
+                            "max": float(max_val) if max_val is not None else None,
+                            "adjusted_rows": changed_rows,
+                        }
 
         if numeric_errors:
             raise HTTPException(
@@ -892,6 +902,7 @@ async def predict(
             "success": True,
             "warnings": {
                 "unknown_columns_ignored": unknown_columns,
+                "numeric_values_clipped": clipped_numeric,
             },
         }
         return _json_safe(payload)

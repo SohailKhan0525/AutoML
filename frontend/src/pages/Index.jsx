@@ -40,7 +40,20 @@ const Index = () => {
 
   const safeError = async (response, fallbackMessage) => {
     try {
-      const data = await response.json();
+      const rawBody = await response.text();
+      let data = null;
+      try {
+        data = rawBody ? JSON.parse(rawBody) : null;
+      } catch {
+        data = null;
+      }
+
+      if (!data) {
+        const statusPrefix = `HTTP ${response.status}${response.statusText ? ` ${response.statusText}` : ''}`;
+        const bodySnippet = rawBody ? rawBody.slice(0, 300) : 'No response body';
+        return `${fallbackMessage} | ${statusPrefix} | ${bodySnippet}`;
+      }
+
       const detail = data?.detail;
 
       if (Array.isArray(detail)) {
@@ -89,9 +102,10 @@ const Index = () => {
         return lines.join(' | ');
       }
 
-      return fallbackMessage;
+      const statusPrefix = `HTTP ${response.status}${response.statusText ? ` ${response.statusText}` : ''}`;
+      return `${fallbackMessage} | ${statusPrefix}`;
     } catch {
-      return fallbackMessage;
+      return `${fallbackMessage} | Unable to parse server error response`;
     }
   };
 
