@@ -43,6 +43,18 @@ const Index = () => {
       const data = await response.json();
       const detail = data?.detail;
 
+      if (Array.isArray(detail)) {
+        const validationMessages = detail
+          .slice(0, 5)
+          .map((item) => {
+            const location = Array.isArray(item?.loc) ? item.loc.join('.') : 'unknown';
+            return `${location}: ${item?.msg || 'invalid value'}`;
+          })
+          .join(', ');
+        const requestId = data?.request_id ? ` | Request ID: ${data.request_id}` : '';
+        return `Request validation failed: ${validationMessages}${requestId}`;
+      }
+
       if (typeof detail === 'string') {
         const requestId = data?.request_id ? ` (request_id: ${data.request_id})` : '';
         return `${detail}${requestId}`;
@@ -57,6 +69,13 @@ const Index = () => {
         }
         if (Array.isArray(detail.invalid_numeric) && detail.invalid_numeric.length > 0) {
           lines.push(`Invalid numeric: ${detail.invalid_numeric.join(', ')}`);
+        }
+        if (Array.isArray(detail.errors) && detail.errors.length > 0) {
+          const firstErrors = detail.errors
+            .slice(0, 5)
+            .map((item) => `${Array.isArray(item?.loc) ? item.loc.join('.') : 'unknown'}: ${item?.msg || 'invalid value'}`)
+            .join(', ');
+          lines.push(`Validation: ${firstErrors}`);
         }
         if (Array.isArray(detail.unknown_columns) && detail.unknown_columns.length > 0) {
           lines.push(`Unknown columns ignored: ${detail.unknown_columns.join(', ')}`);
@@ -383,7 +402,9 @@ const Index = () => {
       setPredictionOutput(JSON.stringify(data, null, 2));
       await recordActivity('prediction_run', `Prediction generated for dataset ${id} with target ${resolvedTargetColumn || 'auto(last column)'}`);
     } catch (error) {
-      setPageError(error.message || 'Prediction failed.');
+      const errorMessage = error.message || 'Prediction failed.';
+      setPageError(errorMessage);
+      setPredictionOutput(`Prediction failed\n${errorMessage}`);
     } finally {
       setIsPredicting(false);
     }

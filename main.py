@@ -12,6 +12,7 @@ import os
 import numpy as np
 import pandas as pd
 from fastapi import Body, Depends, FastAPI, File, Header, HTTPException, Query, Request, UploadFile
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, Response, FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -109,6 +110,23 @@ async def http_exception_handler(request: Request, exc: HTTPException):
             "detail": exc.detail,
             "request_id": request_id,
             "path": request.url.path,
+        },
+    )
+
+
+@app.exception_handler(RequestValidationError)
+async def request_validation_exception_handler(request: Request, exc: RequestValidationError):
+    request_id = str(uuid4())
+    return JSONResponse(
+        status_code=422,
+        content={
+            "detail": {
+                "message": "Request validation failed.",
+                "code": "REQUEST_VALIDATION_ERROR",
+                "errors": exc.errors(),
+                "request_id": request_id,
+                "path": request.url.path,
+            }
         },
     )
 
