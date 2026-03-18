@@ -113,6 +113,7 @@ MAX_PASSWORD_LENGTH = 128
 MAX_ACTIVITY_EVENTS_PER_USER = 200
 OAUTH_STATE_TTL_SECONDS = 600
 RATE_LIMIT_WINDOW_SECONDS = 60
+NOTEBOOK_TEMPLATE_VERSION = 2
 AUTH_RATE_LIMIT_PER_WINDOW = int(os.getenv("AUTH_RATE_LIMIT_PER_WINDOW", "20"))
 AUTOML_RATE_LIMIT_PER_WINDOW = int(os.getenv("AUTOML_RATE_LIMIT_PER_WINDOW", "12"))
 SEED_TEST_USERS = os.getenv("SEED_TEST_USERS", "true").strip().lower() in {"1", "true", "yes", "y"}
@@ -147,6 +148,17 @@ async def security_headers_middleware(request: Request, call_next):
     response.headers["X-Frame-Options"] = "DENY"
     response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
     response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
+    response.headers["Cross-Origin-Opener-Policy"] = "same-origin"
+    response.headers["Cross-Origin-Resource-Policy"] = "same-origin"
+    response.headers["Content-Security-Policy"] = (
+        "default-src 'self' data: blob: https:; "
+        "img-src 'self' data: blob: https:; "
+        "script-src 'self' https:; "
+        "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https:; "
+        "font-src 'self' data: https://fonts.gstatic.com https:; "
+        "connect-src 'self' https: http:; "
+        "frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
+    )
     response.headers["Cache-Control"] = "no-store"
     return response
 
@@ -239,13 +251,11 @@ def _generate_automl_notebook(
     ml_results: dict[str, Any],
     summary: dict[str, Any],
 ) -> bytes:
-    """Generate an AutoML notebook artifact with rich analysis and explanations."""
-    plan = str(ml_results.get("pricing_plan", "free")).lower()
+    """Generate a full, end-to-end ML workflow notebook artifact."""
     task_type = str(ml_results.get("task_type", "unknown"))
     best_model_name = str(ml_results.get("best_model_name", "N/A"))
     model_scores = ml_results.get("model_scores", [])
     top_score = model_scores[0] if model_scores else {}
-    second_score = model_scores[1] if len(model_scores) > 1 else None
     metric_name = str(top_score.get("metric_name", "N/A"))
     metric_value = top_score.get("score", "N/A")
     insights = ml_results.get("auto_insights", [])
@@ -257,171 +267,303 @@ def _generate_automl_notebook(
     tuning_summary = ml_results.get("hyperparameter_tuning", {})
     trained_rows = ml_results.get("trained_rows", len(df))
     workflow_mode = ml_results.get("workflow_mode", "Fast Mode")
-    workflow_strategy = ml_results.get("workflow_strategy", {})
 
     preview_df = df.head(10).replace([np.inf, -np.inf], np.nan)
     preview_records = preview_df.where(pd.notna(preview_df), None).to_dict(orient="records")
 
-    score_gap = None
-    if second_score and isinstance(top_score.get("score"), (int, float)) and isinstance(second_score.get("score"), (int, float)):
-        score_gap = round(float(top_score["score"]) - float(second_score["score"]), 4)
-
-    top_feature_names: list[str] = []
-    for row in feature_importance[:10]:
-        raw_name = str(row.get("feature", "")).strip()
-        cleaned = re.sub(r"^(num__|cat__)", "", raw_name).replace("onehot__", "")
-        if cleaned:
-            top_feature_names.append(cleaned)
-
-    rating_related = [f for f in top_feature_names if re.search(r"rating|elo|score|strength", f, flags=re.IGNORECASE)]
-    turns_related = [f for f in top_feature_names if re.search(r"turn|move|ply|duration|time", f, flags=re.IGNORECASE)]
-
-    model_win_lines = [
-        f"- Winning model: **{best_model_name}**",
-        f"- Primary metric: **{metric_name} = {metric_value}**",
-    ]
-    if second_score:
-        model_win_lines.append(f"- Runner-up: **{second_score.get('model_name', 'N/A')}** with **{second_score.get('score', 'N/A')}**")
-    if score_gap is not None:
-        if score_gap >= 0.02:
-            model_win_lines.append(f"- Performance gap is **{score_gap}**, indicating a strong lead.")
-        elif score_gap >= 0.005:
-            model_win_lines.append(f"- Performance gap is **{score_gap}**, indicating a moderate lead.")
-        else:
-            model_win_lines.append(f"- Performance gap is **{score_gap}**, so top models are close.")
-
-    feature_reason_lines: list[str] = []
-    if rating_related:
-        feature_reason_lines.append("- **Why ratings matter:** " + ", ".join(rating_related[:5]) + " capture relative strength and are often highly predictive.")
-    else:
-        feature_reason_lines.append("- **Why ratings matter:** rating-like columns usually encode baseline skill/quality differences.")
-    if turns_related:
-        feature_reason_lines.append("- **Why turns matter:** " + ", ".join(turns_related[:5]) + " can encode pace/complexity and affect outcomes.")
-    else:
-        feature_reason_lines.append("- **Why turns matter:** move-count and time style features often separate close outcomes.")
-    if top_feature_names:
-        feature_reason_lines.append("- **Top feature set in this run:** " + ", ".join(top_feature_names[:8]) + ".")
-
-    leakage_lines: list[str] = [
-        f"- Plan at training time: **{plan}** ({workflow_mode}).",
-        "- The pipeline removes potential target leakage features before training.",
-        "- Checks include direct target copies, one-to-one mappings, and near-perfect numeric correlations.",
-    ]
-    leakage_lines.append(
-        "- Leakage features removed in this run: **" + ", ".join([str(v) for v in leakage_features[:15]]) + "**"
-        if leakage_features
-        else "- No strong leakage features were detected in this run."
-    )
-    if dropped_features:
-        leakage_lines.append("- Additional dropped features (high-cardinality/noise): **" + ", ".join([str(v) for v in dropped_features[:15]]) + "**")
-    if duplicate_features:
-        leakage_lines.append("- Duplicate features removed (Pro): **" + ", ".join([str(v) for v in duplicate_features[:15]]) + "**")
-
-    cv_lines: list[str] = []
-    if cv_results:
-        for row in cv_results[:5]:
-            cv_lines.append(f"- {row.get('model_name', 'N/A')}: mean={row.get('mean_score', 'N/A')} std={row.get('std_score', 'N/A')} over {row.get('folds', 'N/A')} folds")
-    else:
-        cv_lines.append("- Cross-validation was skipped in this run (plan/runtime optimization).")
-
-    tuning_lines: list[str] = []
-    tuning_enabled = bool(tuning_summary.get("enabled"))
-    tuning_lines.append(f"- Hyperparameter tuning enabled: **{tuning_enabled}**")
-    if tuning_enabled:
-        tuning_lines.append(f"- Tuning method: **{tuning_summary.get('method', 'N/A')}**")
-        tuning_lines.append(f"- Best tuning score: **{tuning_summary.get('best_score', 'N/A')}**")
-        best_params = tuning_summary.get("best_params") or {}
-        if best_params:
-            tuning_lines.append("- Best parameters: **" + json.dumps(best_params, ensure_ascii=True) + "**")
-    else:
-        tuning_lines.append("- Tuning skipped to keep synchronous runtime reliable.")
-
     nb = nbformat.v4.new_notebook()
+
+    conclusion_lines = [
+        f"- Best model selected: **{best_model_name}**",
+        f"- Primary metric achieved: **{metric_name} = {metric_value}**",
+        f"- Workflow mode used: **{workflow_mode}**",
+        f"- Training rows used: **{trained_rows}**",
+    ]
+    if model_scores and len(model_scores) > 1:
+        winner = model_scores[0]
+        runner_up = model_scores[1]
+        if isinstance(winner.get("score"), (int, float)) and isinstance(runner_up.get("score"), (int, float)):
+            gap = round(float(winner["score"]) - float(runner_up["score"]), 4)
+            conclusion_lines.append(
+                f"- Performance margin over runner-up ({runner_up.get('model_name', 'N/A')}): **{gap}**"
+            )
+
+    if feature_importance:
+        top_feat = feature_importance[0].get("feature", "N/A")
+        top_imp = feature_importance[0].get("importance", "N/A")
+        conclusion_lines.append(f"- Most influential feature: **{top_feat}** (importance **{top_imp}**) ")
+
+    if leakage_features:
+        conclusion_lines.append(
+            "- Leakage control removed: **" + ", ".join([str(v) for v in leakage_features[:8]]) + "**"
+        )
+    if duplicate_features:
+        conclusion_lines.append(
+            "- Duplicate feature cleanup removed: **" + ", ".join([str(v) for v in duplicate_features[:8]]) + "**"
+        )
+
+    conclusion_lines.append(
+        "- Why this model performs well: it combines the strongest holdout metric with robust preprocessing (imputation, encoding, scaling), and optional tuning/cross-validation evidence where available."
+    )
+
     nb.cells = [
         nbformat.v4.new_markdown_cell("\n".join([
-            "# AutoML Pro Analysis Notebook",
+            "# Full AutoML Workflow Notebook",
             "",
-            f"Generated from dataset: **{filename}**",
+            f"Dataset: **{filename}**",
             f"Target column: **{target_column}**",
             f"Task type: **{task_type}**",
             f"Workflow mode: **{workflow_mode}**",
-            f"Best model: **{best_model_name}**",
-            f"Top metric: **{metric_name} = {metric_value}**",
-            f"Trained rows used: **{trained_rows}**",
+            f"Best model from server run: **{best_model_name}**",
+            f"Top metric from server run: **{metric_name} = {metric_value}**",
+            f"Trained rows used in server run: **{trained_rows}**",
             f"Generated at: **{datetime.utcnow().isoformat()}Z**",
         ])),
-        nbformat.v4.new_markdown_cell("\n".join(["## Why This Model Wins", "", *model_win_lines])),
-        nbformat.v4.new_markdown_cell("\n".join(["## Leakage Policy and Data Safety (Pro)", "", *leakage_lines])),
-        nbformat.v4.new_markdown_cell("## 1. Reproducible Setup"),
+        nbformat.v4.new_markdown_cell("## 1. Import Libraries"),
         nbformat.v4.new_code_cell("\n".join([
-            "import pandas as pd",
+            "import json",
             "import numpy as np",
-            "from sklearn.model_selection import train_test_split",
+            "import pandas as pd",
             "from sklearn.compose import ColumnTransformer",
             "from sklearn.pipeline import Pipeline",
-            "from sklearn.preprocessing import OneHotEncoder, StandardScaler",
             "from sklearn.impute import SimpleImputer",
+            "from sklearn.preprocessing import OneHotEncoder, StandardScaler",
+            "from sklearn.model_selection import train_test_split, cross_val_score, RandomizedSearchCV",
             "from sklearn.linear_model import LogisticRegression, LinearRegression",
             "from sklearn.tree import DecisionTreeClassifier, DecisionTreeRegressor",
             "from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor",
+            "from sklearn.feature_selection import VarianceThreshold",
             "from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, r2_score, mean_absolute_error, mean_squared_error",
+            "import joblib",
             f"DATA_FILE = '{filename}'",
             f"TARGET = '{target_column}'",
-            f"TASK_TYPE = '{task_type}'",
             "RANDOM_STATE = 42",
         ])),
-        nbformat.v4.new_markdown_cell("## 2. Load and Validate Data"),
+        nbformat.v4.new_markdown_cell("## 2. Load Dataset"),
         nbformat.v4.new_code_cell("\n".join([
             "df = pd.read_csv(DATA_FILE)",
-            "print('Shape:', df.shape)",
-            "print('Target exists:', TARGET in df.columns)",
-            "df.head(10)",
+            "print('Dataset shape:', df.shape)",
+            "print('Columns:', list(df.columns))",
+            "if TARGET not in df.columns:",
+            "    raise ValueError(f'Target column {TARGET} not found in dataset')",
         ])),
-        nbformat.v4.new_markdown_cell("## 3. Data Profiling and EDA"),
+        nbformat.v4.new_markdown_cell("## 3. Explore Data (EDA)"),
         nbformat.v4.new_code_cell("\n".join([
-            "df = df.replace([np.inf, -np.inf], np.nan)",
+            "display(df.head(10))",
+            "print('--- Info ---')",
+            "df.info()",
+            "print('--- Describe ---')",
+            "display(df.describe(include='all').transpose().head(30))",
             "missing = df.isna().sum().sort_values(ascending=False)",
             "display(missing[missing > 0].head(20))",
-            "numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()",
-            "if len(numeric_cols) >= 2:",
-            "    corr = df[numeric_cols].corr(numeric_only=True)",
-            "    display(corr.head(15))",
-            "df.describe(include='all').transpose().head(30)",
         ])),
-        nbformat.v4.new_markdown_cell("## 4. Leakage Detection Checklist"),
+        nbformat.v4.new_markdown_cell("## 4. Handle Missing Values"),
         nbformat.v4.new_code_cell("\n".join([
+            "df = df.replace([np.inf, -np.inf], np.nan)",
             "X = df.drop(columns=[TARGET]).copy()",
             "y = df[TARGET].copy()",
-            "potential_exact_leakage = []",
-            "for col in X.columns:",
-            "    try:",
-            "        if X[col].astype(str).str.lower().equals(y.astype(str).str.lower()):",
-            "            potential_exact_leakage.append(col)",
-            "    except Exception:",
-            "        pass",
-            "print('Potential exact-leakage columns:', potential_exact_leakage)",
-            f"pipeline_reported_leakage = {json.dumps(_json_safe(leakage_features), ensure_ascii=True)}",
-            f"pipeline_dropped_features = {json.dumps(_json_safe(dropped_features), ensure_ascii=True)}",
-            "print('Pipeline leakage removals:', pipeline_reported_leakage)",
-            "print('Pipeline other dropped features:', pipeline_dropped_features)",
+            "print('Missing values before preprocessing:', int(X.isna().sum().sum()))",
+            "# Missing values are handled in the preprocessing pipeline:\n# - numeric: median imputation\n# - categorical: most frequent imputation",
         ])),
-        nbformat.v4.new_markdown_cell("## 5. Feature Engineering Rationale\n\n" + "\n".join(feature_reason_lines)),
-        nbformat.v4.new_markdown_cell("## 6. Validation Stability (Cross-Validation)\n\n" + "\n".join(cv_lines)),
-        nbformat.v4.new_markdown_cell("## 7. Hyperparameter Tuning Summary\n\n" + "\n".join(tuning_lines)),
-        nbformat.v4.new_markdown_cell("## 7.1 Workflow Strategy (What / How / Why)\n\n```json\n" + json.dumps(_json_safe(workflow_strategy), indent=2, ensure_ascii=True) + "\n```"),
-        nbformat.v4.new_markdown_cell("## 8. Server AutoML Snapshot"),
+        nbformat.v4.new_markdown_cell("## 5. Encode Categorical Variables"),
         nbformat.v4.new_code_cell("\n".join([
-            f"preview_rows = {json.dumps(_json_safe(preview_records), ensure_ascii=True)}",
-            f"model_scores = {json.dumps(_json_safe(model_scores), ensure_ascii=True)}",
-            f"auto_insights = {json.dumps(_json_safe(insights), ensure_ascii=True)}",
-            f"summary_snapshot = {json.dumps(_json_safe(summary), ensure_ascii=True)}",
-            "print('Preview rows:', len(preview_rows))",
-            "for row in model_scores[:10]:",
-            "    print('-', row)",
-            "for note in auto_insights:",
+            "numeric_features = X.select_dtypes(include=[np.number]).columns.tolist()",
+            "categorical_features = [c for c in X.columns if c not in numeric_features]",
+            "print('Numeric features:', len(numeric_features))",
+            "print('Categorical features:', len(categorical_features))",
+            "numeric_transformer = Pipeline(steps=[",
+            "    ('imputer', SimpleImputer(strategy='median')),",
+            "    ('scaler', StandardScaler()),",
+            "])",
+            "categorical_transformer = Pipeline(steps=[",
+            "    ('imputer', SimpleImputer(strategy='most_frequent')),",
+            "    ('onehot', OneHotEncoder(handle_unknown='ignore')),",
+            "])",
+            "preprocessor = ColumnTransformer(transformers=[",
+            "    ('num', numeric_transformer, numeric_features),",
+            "    ('cat', categorical_transformer, categorical_features),",
+            "])",
+        ])),
+        nbformat.v4.new_markdown_cell("## 6. Feature Selection / Engineering"),
+        nbformat.v4.new_code_cell("\n".join([
+            "# Optional: remove exact duplicate columns",
+            "duplicate_cols = []",
+            "seen = {}",
+            "for col in X.columns:",
+            "    signature = tuple(X[col].astype('object').where(X[col].notna(), '__MISSING__').astype(str).values)",
+            "    if signature in seen:",
+            "        duplicate_cols.append(col)",
+            "    else:",
+            "        seen[signature] = col",
+            "if duplicate_cols:",
+            "    X = X.drop(columns=duplicate_cols)",
+            "print('Duplicate columns removed:', duplicate_cols)",
+            "# Optional low-variance feature selection after preprocessing can be added with VarianceThreshold.",
+        ])),
+        nbformat.v4.new_markdown_cell("## 7. Split Data (train_test_split)"),
+        nbformat.v4.new_code_cell("\n".join([
+            "task_type = 'classification' if (y.dtype == 'O' or y.nunique(dropna=True) <= 20) else 'regression'",
+            "split_kwargs = {'stratify': y} if task_type == 'classification' and y.nunique(dropna=True) > 1 else {}",
+            "X_train, X_test, y_train, y_test = train_test_split(",
+            "    X, y, test_size=0.2, random_state=RANDOM_STATE, **split_kwargs",
+            ")",
+            "print('Task type:', task_type)",
+            "print('Train shape:', X_train.shape, 'Test shape:', X_test.shape)",
+        ])),
+        nbformat.v4.new_markdown_cell("## 8. Scale / Normalize Features"),
+        nbformat.v4.new_code_cell("\n".join([
+            "# Scaling and normalization are performed in numeric_transformer via StandardScaler.",
+            "# Categorical encoding is applied via OneHotEncoder in preprocessor.",
+            "preprocessor",
+        ])),
+        nbformat.v4.new_markdown_cell("## 9. Choose Models"),
+        nbformat.v4.new_code_cell("\n".join([
+            "if task_type == 'classification':",
+            "    models = {",
+            "        'Logistic Regression': LogisticRegression(max_iter=400, solver='liblinear', random_state=RANDOM_STATE),",
+            "        'Decision Tree': DecisionTreeClassifier(random_state=RANDOM_STATE),",
+            "        'Random Forest': RandomForestClassifier(n_estimators=120, random_state=RANDOM_STATE),",
+            "    }",
+            "else:",
+            "    models = {",
+            "        'Linear Regression': LinearRegression(),",
+            "        'Decision Tree': DecisionTreeRegressor(random_state=RANDOM_STATE),",
+            "        'Random Forest': RandomForestRegressor(n_estimators=120, random_state=RANDOM_STATE),",
+            "    }",
+            "models",
+        ])),
+        nbformat.v4.new_markdown_cell("## 10. Train Models (model.fit)"),
+        nbformat.v4.new_code_cell("\n".join([
+            "trained = {}",
+            "leaderboard = []",
+            "for model_name, estimator in models.items():",
+            "    pipe = Pipeline(steps=[('preprocessor', preprocessor), ('model', estimator)])",
+            "    pipe.fit(X_train, y_train)",
+            "    pred = pipe.predict(X_test)",
+            "    if task_type == 'classification':",
+            "        score = accuracy_score(y_test, pred)",
+            "        metric = 'accuracy'",
+            "    else:",
+            "        score = r2_score(y_test, pred)",
+            "        metric = 'r2'",
+            "    leaderboard.append({'model': model_name, 'metric': metric, 'score': float(score)})",
+            "    trained[model_name] = pipe",
+            "leaderboard = sorted(leaderboard, key=lambda x: x['score'], reverse=True)",
+            "display(pd.DataFrame(leaderboard))",
+            "best_model_name = leaderboard[0]['model']",
+            "best_pipeline = trained[best_model_name]",
+            "print('Best model:', best_model_name)",
+        ])),
+        nbformat.v4.new_markdown_cell("## 11. Make Predictions (model.predict)"),
+        nbformat.v4.new_code_cell("\n".join([
+            "y_pred = best_pipeline.predict(X_test)",
+            "print('Sample predictions:', y_pred[:10])",
+        ])),
+        nbformat.v4.new_markdown_cell("## 12. Evaluate Model"),
+        nbformat.v4.new_code_cell("\n".join([
+            "if task_type == 'classification':",
+            "    metrics = {",
+            "        'accuracy': float(accuracy_score(y_test, y_pred)),",
+            "        'precision_weighted': float(precision_score(y_test, y_pred, average='weighted', zero_division=0)),",
+            "        'recall_weighted': float(recall_score(y_test, y_pred, average='weighted', zero_division=0)),",
+            "        'f1_weighted': float(f1_score(y_test, y_pred, average='weighted', zero_division=0)),",
+            "    }",
+            "else:",
+            "    rmse = float(np.sqrt(mean_squared_error(y_test, y_pred)))",
+            "    metrics = {",
+            "        'r2': float(r2_score(y_test, y_pred)),",
+            "        'mae': float(mean_absolute_error(y_test, y_pred)),",
+            "        'rmse': rmse,",
+            "    }",
+            "metrics",
+        ])),
+        nbformat.v4.new_markdown_cell("## 13. Hyperparameter Tuning (RandomizedSearchCV)"),
+        nbformat.v4.new_code_cell("\n".join([
+            "if 'Random Forest' in models:",
+            "    if task_type == 'classification':",
+            "        base_rf = RandomForestClassifier(random_state=RANDOM_STATE)",
+            "        scoring = 'accuracy'",
+            "    else:",
+            "        base_rf = RandomForestRegressor(random_state=RANDOM_STATE)",
+            "        scoring = 'r2'",
+            "    tune_pipe = Pipeline(steps=[('preprocessor', preprocessor), ('model', base_rf)])",
+            "    param_dist = {",
+            "        'model__n_estimators': [80, 120, 180],",
+            "        'model__max_depth': [8, 12, 16, None],",
+            "        'model__min_samples_split': [2, 4, 8],",
+            "        'model__min_samples_leaf': [1, 2, 4],",
+            "    }",
+            "    search = RandomizedSearchCV(",
+            "        tune_pipe, param_dist, n_iter=8, cv=3, scoring=scoring, random_state=RANDOM_STATE, n_jobs=1",
+            "    )",
+            "    search.fit(X_train, y_train)",
+            "    tuned_best = search.best_estimator_",
+            "    tuned_pred = tuned_best.predict(X_test)",
+            "    print('Best params:', search.best_params_)",
+            "    print('Best CV score:', search.best_score_)",
+            "else:",
+            "    print('Random Forest not available for tuning in this run.')",
+        ])),
+        nbformat.v4.new_markdown_cell("## 14. Cross-Validation"),
+        nbformat.v4.new_code_cell("\n".join([
+            "cv_scoring = 'accuracy' if task_type == 'classification' else 'r2'",
+            "cv_scores = cross_val_score(best_pipeline, X, y, cv=5, scoring=cv_scoring, n_jobs=1)",
+            "print('CV scores:', cv_scores)",
+            "print('CV mean:', float(np.mean(cv_scores)), 'CV std:', float(np.std(cv_scores)))",
+        ])),
+        nbformat.v4.new_markdown_cell("## 15. Feature Importance"),
+        nbformat.v4.new_code_cell("\n".join([
+            "model_obj = best_pipeline.named_steps['model']",
+            "if hasattr(model_obj, 'feature_importances_'):",
+            "    feat_names = best_pipeline.named_steps['preprocessor'].get_feature_names_out()",
+            "    importances = model_obj.feature_importances_",
+            "    fi = pd.DataFrame({'feature': feat_names, 'importance': importances}).sort_values('importance', ascending=False)",
+            "    display(fi.head(20))",
+            "else:",
+            "    print('Feature importances are not available for this model type.')",
+        ])),
+        nbformat.v4.new_markdown_cell("## 16. Save Model Artifact"),
+        nbformat.v4.new_code_cell("\n".join([
+            "model_path = f'automl_model_{TARGET}.joblib'",
+            "joblib.dump(best_pipeline, model_path)",
+            "print('Saved model to:', model_path)",
+        ])),
+        nbformat.v4.new_markdown_cell("## 17. Deployment-Ready Prediction Example"),
+        nbformat.v4.new_code_cell("\n".join([
+            "sample_payload = X_test.head(1).to_dict(orient='records')[0]",
+            "print('Sample payload:')",
+            "print(json.dumps(sample_payload, indent=2, default=str))",
+            "single_pred = best_pipeline.predict(pd.DataFrame([sample_payload]))",
+            "print('Predicted value:', single_pred[0])",
+            "if hasattr(best_pipeline, 'predict_proba'):",
+            "    proba = best_pipeline.predict_proba(pd.DataFrame([sample_payload]))",
+            "    print('Prediction probabilities:', proba.tolist())",
+        ])),
+        nbformat.v4.new_markdown_cell("## 18. Server Run Snapshot"),
+        nbformat.v4.new_code_cell("\n".join([
+            f"server_model_scores = {json.dumps(_json_safe(model_scores), ensure_ascii=True)}",
+            f"server_insights = {json.dumps(_json_safe(insights), ensure_ascii=True)}",
+            f"server_feature_importance = {json.dumps(_json_safe(feature_importance), ensure_ascii=True)}",
+            f"server_summary = {json.dumps(_json_safe(summary), ensure_ascii=True)}",
+            f"server_preview_rows = {json.dumps(_json_safe(preview_records), ensure_ascii=True)}",
+            f"server_tuning = {json.dumps(_json_safe(tuning_summary), ensure_ascii=True)}",
+            f"server_cv = {json.dumps(_json_safe(cv_results), ensure_ascii=True)}",
+            f"server_leakage_removed = {json.dumps(_json_safe(leakage_features), ensure_ascii=True)}",
+            f"server_duplicate_removed = {json.dumps(_json_safe(duplicate_features), ensure_ascii=True)}",
+            f"server_other_dropped = {json.dumps(_json_safe(dropped_features), ensure_ascii=True)}",
+            "print('Server leaderboard rows:', len(server_model_scores))",
+            "print('Server auto insights:')",
+            "for note in server_insights:",
             "    print('-', note)",
         ])),
-        nbformat.v4.new_markdown_cell("## 9. Practical Next Steps\n\n- Validate on a holdout set.\n- Monitor drift for ratings and turn-like features.\n- Re-check leakage when adding new columns."),
+        nbformat.v4.new_markdown_cell(
+            "## 19. Practical Next Steps\n\n"
+            "- Validate with a true holdout set that represents production data.\n"
+            "- Monitor drift on top features and target distribution.\n"
+            "- Retrain when schema or business rules change.\n"
+            "- Add model monitoring and alerting for quality drops."
+        ),
+        nbformat.v4.new_markdown_cell("## 20. Conclusion\n\n" + "\n".join(conclusion_lines)),
     ]
 
     notebook_json = nbformat.writes(nb, version=4)
@@ -1447,7 +1589,11 @@ async def run_automl(
                             "numeric_limits": numeric_limits,
                         }
                         logger.info(f"Rebuilt missing model artifact for {selected_target}")
-                    if selected_target not in dataset["notebook_artifacts"]:
+                    notebook_artifact = dataset["notebook_artifacts"].get(selected_target)
+                    if (
+                        notebook_artifact is None
+                        or notebook_artifact.get("template_version") != NOTEBOOK_TEMPLATE_VERSION
+                    ):
                         if dataset["summary"] is None:
                             dataset["summary"] = analyze_dataset(df)
                         notebook_blob = _generate_automl_notebook(
@@ -1461,6 +1607,7 @@ async def run_automl(
                             "blob": notebook_blob,
                             "generated_at": time.time(),
                             "plan": pricing_plan,
+                            "template_version": NOTEBOOK_TEMPLATE_VERSION,
                         }
                 else:
                     start = perf_counter()
@@ -1510,6 +1657,7 @@ async def run_automl(
                         "blob": notebook_blob,
                         "generated_at": time.time(),
                         "plan": pricing_plan,
+                        "template_version": NOTEBOOK_TEMPLATE_VERSION,
                     }
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -1525,6 +1673,7 @@ async def run_automl(
         "target_column": selected_target,
         "pricing_plan": pricing_plan,
         "automl_cache_hit": automl_cache_hit,
+        "notebook_generated": selected_target in dataset["notebook_artifacts"],
     }
     return _json_safe(payload)
 
@@ -1617,7 +1766,7 @@ async def download_notebook(
         raise HTTPException(status_code=400, detail="No AutoML results available. Run AutoML first.")
 
     artifact = dataset["notebook_artifacts"].get(selected_target)
-    if not artifact:
+    if not artifact or artifact.get("template_version") != NOTEBOOK_TEMPLATE_VERSION:
         cached = dataset["automl_cache"].get(selected_target)
         if not cached:
             raise HTTPException(status_code=404, detail="No notebook artifact found for selected target.")
@@ -1634,6 +1783,7 @@ async def download_notebook(
             "blob": notebook_blob,
             "generated_at": time.time(),
             "plan": cached.get("plan", "free"),
+            "template_version": NOTEBOOK_TEMPLATE_VERSION,
         }
         dataset["notebook_artifacts"][selected_target] = artifact
 

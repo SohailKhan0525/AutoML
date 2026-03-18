@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { Suspense, lazy } from 'react';
 import { BrowserRouter, Routes, Route, Navigate, useLocation } from 'react-router-dom';
 import { useAuth } from './context/AuthContext';
 import ProtectedRoute from './components/ProtectedRoute';
@@ -6,20 +6,27 @@ import PublicRoute from './components/PublicRoute';
 import ErrorBoundary from './components/ErrorBoundary';
 
 // Pages
-import Landing from './pages/Landing';
-import Signup from './pages/Signup';
-import Login from './pages/Login';
-import Dashboard from './pages/Dashboard';
-import Index from './pages/Index';
-import Profile from './pages/Profile';
-import Settings from './pages/Settings';
-import OAuthCallback from './pages/OAuthCallback';
+const Landing = lazy(() => import('./pages/Landing'));
+const Signup = lazy(() => import('./pages/Signup'));
+const Login = lazy(() => import('./pages/Login'));
+const Dashboard = lazy(() => import('./pages/Dashboard'));
+const Index = lazy(() => import('./pages/Index'));
+const Profile = lazy(() => import('./pages/Profile'));
+const Settings = lazy(() => import('./pages/Settings'));
+const OAuthCallback = lazy(() => import('./pages/OAuthCallback'));
 
 function AnimatedRoutes({ token }) {
   const location = useLocation();
 
   return (
     <div key={`${location.pathname}${location.search}`} className="page-transition">
+      <Suspense
+        fallback={
+          <div className="flex items-center justify-center min-h-[60vh]">
+            <span className="material-symbols-outlined text-3xl text-primary animate-spin">progress_activity</span>
+          </div>
+        }
+      >
       <Routes location={location}>
       {/* Redirect root to landing if not logged in, else to index */}
       <Route
@@ -108,6 +115,7 @@ function AnimatedRoutes({ token }) {
       {/* Catch all - redirect to landing */}
       <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
+      </Suspense>
     </div>
   );
 }
