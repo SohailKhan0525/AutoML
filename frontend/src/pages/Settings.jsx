@@ -34,6 +34,74 @@ export default function Settings() {
   const [passwordSuccess, setPasswordSuccess] = useState('');
   const [isUpdatingPassword, setIsUpdatingPassword] = useState(false);
   const [settingsError, setSettingsError] = useState('');
+  const [activityEntries, setActivityEntries] = useState([]);
+  const [isSavingSettings, setIsSavingSettings] = useState(false);
+  const [isLoadingSettings, setIsLoadingSettings] = useState(true);
+
+  const recordActivity = async (event, details) => {
+    if (!token) return;
+    try {
+      await fetch('/api/user/activity', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({ event, details })
+      });
+    } catch {
+      // Activity tracking should never block user actions.
+    }
+  };
+
+  const loadSettingsAndActivity = async () => {
+    if (!token) {
+      setIsLoadingSettings(false);
+      return;
+    }
+
+    try {
+      setSettingsError('');
+      const [settingsResponse, activityResponse] = await Promise.all([
+        fetch('/api/user/settings', {
+          headers: { 'Authorization': `Bearer ${token}` }
+        }),
+        fetch('/api/user/activity?limit=8', {
+          headers: { 'Authorization': `Bearer ${token}` }
+        })
+      ]);
+
+      if (settingsResponse.ok) {
+        const payload = await settingsResponse.json();
+        const apiSettings = payload?.settings;
+        if (apiSettings) {
+          const mapped = {
+            darkMode: Boolean(apiSettings.dark_mode),
+            emailNotifications: Boolean(apiSettings.email_notifications),
+            activityLog: Boolean(apiSettings.activity_log),
+            twoFactor: Boolean(apiSettings.two_factor)
+          };
+          setSettings(mapped);
+          localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(mapped));
+          localStorage.setItem('theme', mapped.darkMode ? 'dark' : 'light');
+          document.documentElement.classList.toggle('dark', mapped.darkMode);
+        }
+      }
+
+      if (activityResponse.ok) {
+        const payload = await activityResponse.json();
+        setActivityEntries(Array.isArray(payload?.activity) ? payload.activity : []);
+      }
+    } catch {
+      setSettingsError('Unable to load settings right now. Please refresh and try again.');
+    } finally {
+      setIsLoadingSettings(false);
+    }
+  };
+
+  useEffect(() => {
+    loadSettingsAndActivity();
+  }, [token]);
 
   useEffect(() => {
     localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(settings));
@@ -54,6 +122,40 @@ export default function Settings() {
       setSettingsError('Unable to save preference right now. Please try again.');
     }
   };
+
+  useEffect(() => {
+    const persistSettings = async () => {
+      if (!token || isLoadingSettings) return;
+      setIsSavingSettings(true);
+      try {
+        const response = await fetch('/api/user/settings', {
+          method: 'PUT',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`
+          },
+          body: JSON.stringify({
+            dark_mode: settings.darkMode,
+            email_notifications: settings.emailNotifications,
+            activity_log: settings.activityLog,
+            two_factor: settings.twoFactor
+          })
+        });
+
+        if (!response.ok) {
+          const data = await response.json();
+          setSettingsError(data.detail || 'Failed to save settings.');
+          return;
+        }
+      } catch {
+        setSettingsError('Unable to save preference right now. Please try again.');
+      } finally {
+        setIsSavingSettings(false);
+      }
+    };
+
+    persistSettings();
+  }, [settings, token, isLoadingSettings]);
 
   const navigateBack = () => {
     try {
@@ -118,6 +220,8 @@ export default function Settings() {
       setPasswordSuccess(data.message || 'Password updated successfully');
       setPasswords({ current: '', new: '', confirm: '' });
       setShowPasswordChange(false);
+      await recordActivity('password_changed', 'Password updated from settings page');
+      await loadSettingsAndActivity();
     } catch {
       setPasswordError('Network error while updating password');
     } finally {
@@ -149,6 +253,9 @@ export default function Settings() {
         )}
 
         <div className="bg-white dark:bg-slate-900 rounded-2xl shadow-xl border border-slate-200 dark:border-slate-700 p-5 sm:p-6 space-y-6">
+          {isSavingSettings && (
+            <div className="text-xs text-slate-500">Saving settings...</div>
+          )}
           {/* Account Section */}
           <div>
             <h3 className="text-lg font-bold text-slate-900 dark:text-slate-100 mb-4 flex items-center gap-2">
@@ -314,6 +421,25 @@ export default function Settings() {
                   <div className="w-11 h-6 bg-slate-300 dark:bg-slate-600 peer-focus:outline-none peer-focus:ring-2 peer-focus:ring-primary/50 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-primary"></div>
                 </label>
               </div>
+            </div>
+          </div>
+
+          <div>
+            <h3 className="text-lg font-bold text-slate-900 dark:text-slate-100 mb-4 flex items-center gap-2">
+              <span className="material-symbols-outlined text-primary">history</span>
+              Activity Logs
+            </h3>
+            <div className="bg-slate-50 dark:bg-slate-800/50 rounded-xl p-4 border border-slate-200 dark:border-slate-700 space-y-2">
+              {activityEntries.length === 0 ? (
+                <p className="text-sm text-slate-500">No recent activity found.</p>
+              ) : (
+                activityEntries.map((entry, index) => (
+                  <div key={`${entry.timestamp}-${index}`} className="text-sm text-slate-700 dark:text-slate-300 border-b last:border-b-0 border-slate-200 dark:border-slate-700 pb-2 last:pb-0">
+                    <p className="font-medium">{entry.event.replaceAll('_', ' ')}</p>
+                    <p className="text-xs text-slate-500">{entry.details || 'No details'}</p>
+                  </div>
+                ))
+              )}
             </div>
           </div>
 

@@ -37,6 +37,18 @@ class ChangePasswordRequest(BaseModel):
     current_password: str
     new_password: str
 
+
+class UserSettingsRequest(BaseModel):
+    dark_mode: bool
+    email_notifications: bool
+    activity_log: bool
+    two_factor: bool
+
+
+class ActivityRequest(BaseModel):
+    event: str
+    details: str | None = None
+
 app = FastAPI(title="AutoML Dataset Analyzer", version="0.1.0")
 
 # Serve React static assets
@@ -50,6 +62,8 @@ app.state.datasets = {}
 app.state.dataset_order = []
 app.state.latest_dataset_id = None
 app.state.automl_lock = Lock()
+app.state.user_settings = {}
+app.state.user_activity = {}
 
 MAX_DATASETS_IN_MEMORY = 6
 MAX_FILE_SIZE_BYTES = 50 * 1024 * 1024
@@ -58,6 +72,7 @@ MAX_COLUMNS = 200
 DATASET_TTL_SECONDS = 60 * 60
 MAX_EMAIL_LENGTH = 254
 MAX_PASSWORD_LENGTH = 128
+MAX_ACTIVITY_EVENTS_PER_USER = 200
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger("automl")
@@ -204,6 +219,29 @@ def _resolve_user_from_auth_header(authorization: str | None, db: Session) -> Us
     return user
 
 
+def _default_user_settings() -> dict[str, bool]:
+    return {
+        "dark_mode": False,
+        "email_notifications": True,
+        "activity_log": True,
+        "two_factor": False,
+    }
+
+
+def _append_user_activity(user_id: str, event: str, details: str | None = None) -> None:
+    entries = app.state.user_activity.setdefault(user_id, [])
+    entries.insert(
+        0,
+        {
+            "event": event,
+            "details": details,
+            "timestamp": time.time(),
+        },
+    )
+    if len(entries) > MAX_ACTIVITY_EVENTS_PER_USER:
+        del entries[MAX_ACTIVITY_EVENTS_PER_USER:]
+
+
 @app.post("/api/auth/signup")
 async def signup(request: SignupRequest, db: Session = Depends(get_db)):
     """Sign up a new user."""
@@ -232,6 +270,7 @@ async def signup(request: SignupRequest, db: Session = Depends(get_db)):
     db.refresh(user)
 
     logger.info("User signed up: %s", email)
+    _append_user_activity(user.id, "account_created", "New account registered")
 
     return _build_auth_response(user, "Signup successful.")
 
@@ -247,6 +286,7 @@ async def login(request: LoginRequest, db: Session = Depends(get_db)):
 
     user = _authenticate_user(email, password, db)
     logger.info("User logged in: %s", email)
+    _append_user_activity(user.id, "login", "User logged in")
 
     return _build_auth_response(user, "Login successful.")
 
@@ -262,6 +302,7 @@ async def signin(request: LoginRequest, db: Session = Depends(get_db)):
 
     user = _authenticate_user(email, password, db)
     logger.info("User signed in: %s", email)
+    _append_user_activity(user.id, "signin", "User signed in")
 
     return _build_auth_response(user, "Sign in successful.")
 
@@ -299,7 +340,63 @@ async def change_password(
     db.commit()
 
     logger.info("Password changed for user: %s", user.email)
+    _append_user_activity(user.id, "password_changed", "Password updated successfully")
     return {"message": "Password updated successfully."}
+
+
+@app.get("/api/user/settings")
+async def get_user_settings(authorization: str | None = Header(None), db: Session = Depends(get_db)):
+    """Fetch current user's persisted settings."""
+    user = _resolve_user_from_auth_header(authorization, db)
+    if user.id not in app.state.user_settings:
+        app.state.user_settings[user.id] = _default_user_settings()
+
+    return {"settings": app.state.user_settings[user.id]}
+
+
+@app.put("/api/user/settings")
+async def update_user_settings(
+    request: UserSettingsRequest,
+    authorization: str | None = Header(None),
+    db: Session = Depends(get_db),
+):
+    """Update current user's settings."""
+    user = _resolve_user_from_auth_header(authorization, db)
+    app.state.user_settings[user.id] = {
+        "dark_mode": request.dark_mode,
+        "email_notifications": request.email_notifications,
+        "activity_log": request.activity_log,
+        "two_factor": request.two_factor,
+    }
+    _append_user_activity(user.id, "settings_updated", "Updated account preferences")
+    return {"message": "Settings updated.", "settings": app.state.user_settings[user.id]}
+
+
+@app.get("/api/user/activity")
+async def get_user_activity(
+    limit: int = Query(default=20, ge=1, le=100),
+    authorization: str | None = Header(None),
+    db: Session = Depends(get_db),
+):
+    """Return recent activity entries for current user."""
+    user = _resolve_user_from_auth_header(authorization, db)
+    entries = app.state.user_activity.get(user.id, [])
+    return {"activity": entries[:limit]}
+
+
+@app.post("/api/user/activity")
+async def add_user_activity(
+    request: ActivityRequest,
+    authorization: str | None = Header(None),
+    db: Session = Depends(get_db),
+):
+    """Append a user activity event from frontend interactions."""
+    user = _resolve_user_from_auth_header(authorization, db)
+    event = request.event.strip()
+    if not event:
+        raise HTTPException(status_code=400, detail="Event is required.")
+    _append_user_activity(user.id, event, request.details)
+    return {"message": "Activity recorded."}
 
 
 @app.get("/api/health")
