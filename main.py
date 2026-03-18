@@ -642,10 +642,24 @@ async def run_automl(
                 if refreshed_cache_entry and refreshed_cache_entry.get("plan") == pricing_plan:
                     ml_results = refreshed_cache_entry["results"]
                     automl_cache_hit = True
-                    # Try to load model artifact if it exists
+                    # Rebuild missing model artifact for cache hit so prediction remains available.
                     if selected_target not in dataset["model_artifacts"]:
-                        # Model wasn't stored, create a placeholder
-                        logger.warning(f"Model artifact missing for {selected_target}, will be trained on next request")
+                        _, best_model = run_ml_pipeline(
+                            df,
+                            target_column=selected_target,
+                            pricing_plan=pricing_plan,
+                            return_best_model=True,
+                        )
+                        trained_features = ml_results.get("feature_metadata", {}).get("all_features", [])
+                        dataset["model_artifacts"][selected_target] = {
+                            "blob": pickle.dumps(best_model),
+                            "trained_at": time.time(),
+                            "plan": pricing_plan,
+                            "feature_columns": trained_features,
+                            "categorical_features": ml_results.get("feature_metadata", {}).get("categorical_features", []),
+                            "numeric_features": ml_results.get("feature_metadata", {}).get("numeric_features", []),
+                        }
+                        logger.info(f"Rebuilt missing model artifact for {selected_target}")
                 else:
                     start = perf_counter()
                     ml_results, best_model = run_ml_pipeline(
@@ -661,11 +675,12 @@ async def run_automl(
                     }
                     # Store model artifact immediately after training
                     logger.info(f"Storing model artifact for {selected_target}")
+                    trained_features = ml_results.get("feature_metadata", {}).get("all_features", [])
                     dataset["model_artifacts"][selected_target] = {
                         "blob": pickle.dumps(best_model),
                         "trained_at": time.time(),
                         "plan": pricing_plan,
-                        "feature_columns": [c for c in df.columns if c != selected_target],
+                        "feature_columns": trained_features,
                         "categorical_features": ml_results.get("feature_metadata", {}).get("categorical_features", []),
                         "numeric_features": ml_results.get("feature_metadata", {}).get("numeric_features", []),
                     }
@@ -758,7 +773,9 @@ async def predict(
 
         model = pickle.loads(artifact["blob"])
         input_df = pd.DataFrame(records)
-        expected_columns = artifact["feature_columns"]
+        expected_columns = artifact.get("feature_columns") or list(getattr(model, "feature_names_in_", []))
+        if not expected_columns:
+            raise HTTPException(status_code=500, detail="Model artifact is missing trained feature metadata.")
         
         categorical_features = artifact.get("categorical_features", [])
         numeric_features = artifact.get("numeric_features", [])

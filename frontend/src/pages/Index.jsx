@@ -207,9 +207,13 @@ const Index = () => {
   const resolvedTargetColumn = mlResults?.target_column || targetColumn || '';
 
   const predictionColumns = useMemo(() => {
+    const trainedFeatures = mlResults?.feature_metadata?.all_features;
+    if (Array.isArray(trainedFeatures) && trainedFeatures.length > 0) {
+      return trainedFeatures;
+    }
     if (!Array.isArray(summary?.column_names)) return [];
     return summary.column_names.filter((columnName) => columnName !== resolvedTargetColumn);
-  }, [summary, resolvedTargetColumn]);
+  }, [mlResults, summary, resolvedTargetColumn]);
 
   const categoricalFeatures = useMemo(() => {
     return mlResults?.feature_metadata?.categorical_features || [];
@@ -677,16 +681,18 @@ const Index = () => {
                       ) : (
                         predictionColumns.map((columnName) => {
                           const isCategorical = categoricalFeatures.includes(columnName);
+                          const isNumeric = numericFeatures.includes(columnName);
                           const options = isCategorical ? getCategoricalOptions(columnName) : [];
+                          const useDropdown = isCategorical && options.length > 0;
                           
                           return (
                             <label key={columnName} className="flex flex-col gap-1 text-xs">
                               <span className="text-slate-600 dark:text-slate-300">
                                 {columnName}
                                 {isCategorical && <span className="text-xs text-slate-500 ml-1">(categorical)</span>}
-                                {numericFeatures.includes(columnName) && <span className="text-xs text-slate-500 ml-1">(numeric)</span>}
+                                {isNumeric && <span className="text-xs text-slate-500 ml-1">(numeric)</span>}
                               </span>
-                              {isCategorical ? (
+                              {useDropdown ? (
                                 <select
                                   value={predictionInputs[columnName] ?? ''}
                                   onChange={(event) => handlePredictionInputChange(columnName, event.target.value)}
@@ -699,13 +705,21 @@ const Index = () => {
                                     </option>
                                   ))}
                                 </select>
-                              ) : (
+                              ) : isNumeric ? (
                                 <input
                                   type="number"
                                   value={predictionInputs[columnName] ?? ''}
                                   onChange={(event) => handlePredictionInputChange(columnName, event.target.value)}
                                   className="px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-sm"
                                   placeholder={`Enter numeric value for ${columnName}`}
+                                />
+                              ) : (
+                                <input
+                                  type="text"
+                                  value={predictionInputs[columnName] ?? ''}
+                                  onChange={(event) => handlePredictionInputChange(columnName, event.target.value)}
+                                  className="px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-sm"
+                                  placeholder={isCategorical ? `Enter ${columnName}` : `Enter value for ${columnName}`}
                                 />
                               )}
                             </label>
