@@ -665,3 +665,35 @@ tabLinks.forEach((link) => {
 setDatasetState(false);
 switchTab("overview");
 loadDatasetHistory().catch(() => {});
+
+// Logout function
+function logout() {
+  localStorage.removeItem("token");
+  localStorage.removeItem("user");
+  window.location.href = "/login";
+}
+
+// Open settings (placeholder for now)
+function openSettings(event) {
+  event.preventDefault();
+  alert("Settings page coming soon! (Admin features, preferences, etc.)");
+}
+
+// Load and display user info
+function loadUserInfo() {
+  const userStr = localStorage.getItem("user");
+  if (userStr) {
+    try {
+      const user = JSON.parse(userStr);
+      const sidebarUserEmail = document.getElementById("sidebarUserEmail");
+      if (sidebarUserEmail) {
+        sidebarUserEmail.textContent = user.email || "User";
+      }
+    } catch (e) {
+      console.error("Failed to parse user info:", e);
+    }
+  }
+}
+
+// Initialize app
+document.addEventListener("DOMContentLoaded", loadUserInfo);

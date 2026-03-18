@@ -134,6 +134,12 @@ async def index(request: Request):
     return templates.TemplateResponse("index.html", {"request": request})
 
 
+@app.get("/landing")
+async def landing_page(request: Request):
+    """Serve landing page for global users."""
+    return templates.TemplateResponse("landing.html", {"request": request})
+
+
 @app.get("/signup")
 async def signup_page(request: Request):
     """Serve signup page."""
