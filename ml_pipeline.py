@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Any
+import re
 
 import numpy as np
 import pandas as pd
@@ -255,6 +256,58 @@ def _drop_high_cardinality_features(X: pd.DataFrame) -> tuple[pd.DataFrame, list
     return kept, dropped
 
 
+def _drop_target_leakage_features(
+    X: pd.DataFrame,
+    y: pd.Series,
+    task_type: str,
+    target_column: str,
+) -> tuple[pd.DataFrame, list[str]]:
+    """Drop columns that deterministically encode the target (target leakage)."""
+    dropped: list[str] = []
+    kept = X.copy()
+
+    target_name_norm = re.sub(r"[^a-z0-9]", "", str(target_column).lower())
+    y_cmp = y.astype("object").where(y.notna(), "missing").astype(str).str.strip().str.lower()
+
+    for col in list(kept.columns):
+        col_name_norm = re.sub(r"[^a-z0-9]", "", str(col).lower())
+        if col_name_norm == target_name_norm:
+            dropped.append(str(col))
+            continue
+
+        x_raw = kept[col]
+        x_cmp = x_raw.astype("object").where(x_raw.notna(), "missing").astype(str).str.strip().str.lower()
+
+        # Exact row-wise equality with target is direct leakage.
+        if x_cmp.equals(y_cmp):
+            dropped.append(str(col))
+            continue
+
+        if task_type == "classification":
+            paired = pd.DataFrame({"x": x_cmp, "y": y_cmp})
+            if len(paired) >= 10:
+                unique_targets_per_value = paired.groupby("x")["y"].nunique(dropna=False)
+                # If each feature value maps to exactly one target value, it leaks target information.
+                if not unique_targets_per_value.empty and int(unique_targets_per_value.max()) == 1:
+                    value_cardinality_ratio = paired["x"].nunique(dropna=False) / max(len(paired), 1)
+                    if value_cardinality_ratio < 0.8:
+                        dropped.append(str(col))
+                        continue
+        else:
+            x_num = pd.to_numeric(x_raw, errors="coerce")
+            y_num = pd.to_numeric(y, errors="coerce")
+            valid_mask = x_num.notna() & y_num.notna()
+            if int(valid_mask.sum()) >= 30:
+                corr_value = x_num[valid_mask].corr(y_num[valid_mask])
+                if pd.notna(corr_value) and abs(float(corr_value)) >= 0.999:
+                    dropped.append(str(col))
+
+    if dropped:
+        kept = kept.drop(columns=dropped)
+
+    return kept, dropped
+
+
 def run_ml_pipeline(
     df: pd.DataFrame,
     target_column: str | None = None,
@@ -290,11 +343,12 @@ def run_ml_pipeline(
         y = sampled[resolved_target].copy()
         sampled_rows = len(sampled)
 
-    X, dropped_features = _drop_high_cardinality_features(X)
-    if X.shape[1] == 0:
-        raise ValueError("All feature columns were dropped due to very high cardinality.")
-
     task_type = detect_task_type(y)
+
+    X, dropped_features = _drop_high_cardinality_features(X)
+    X, leakage_features = _drop_target_leakage_features(X, y, task_type, resolved_target)
+    if X.shape[1] == 0:
+        raise ValueError("All feature columns were dropped due to high cardinality or target leakage.")
 
     preprocessor, numeric_features, categorical_features = _build_preprocessor(X)
 
@@ -543,6 +597,10 @@ def run_ml_pipeline(
         feature_importance=feature_importance,
         missing_percentage=quality_score["missing_percentage"],
     )
+    if leakage_features:
+        auto_insights.append(
+            f"Dropped potential leakage features: {', '.join(sorted(leakage_features)[:6])}."
+        )
 
     best_model_name = model_scores[0]["model_name"]
     best_model = trained_models.get(best_model_name)
@@ -550,8 +608,10 @@ def run_ml_pipeline(
     feature_metadata = {
         "numeric_features": numeric_features,
         "categorical_features": categorical_features,
-        "all_features": [c for c in df.columns if c != resolved_target],
+        "all_features": [str(c) for c in X.columns.tolist()],
     }
+
+    all_dropped_features = sorted(set([str(col) for col in dropped_features + leakage_features]))
 
     result = {
         "pricing_plan": normalized_plan,
@@ -585,7 +645,8 @@ def run_ml_pipeline(
         "numeric_feature_count": len(numeric_features),
         "categorical_feature_count": len(categorical_features),
         "trained_rows": int(sampled_rows),
-        "dropped_feature_columns": dropped_features,
+        "dropped_feature_columns": all_dropped_features,
+        "leakage_feature_columns": sorted([str(col) for col in leakage_features]),
         "best_model_name": best_model_name,
         "quality_score": quality_score,
         "auto_insights": auto_insights,
