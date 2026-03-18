@@ -947,7 +947,7 @@ const Index = () => {
 
               <div className="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm p-4">
                 <h4 className="font-semibold mb-2">Prediction Playground</h4>
-                <p className="text-xs text-slate-500 mb-4">Run a single-record prediction using your trained model.</p>
+                <p className="text-xs text-slate-500 mb-4">Run predictions directly in AutoML (no Streamlit required) using your trained model.</p>
 
                 {!mlResults ? (
                   <p className="text-sm text-slate-500">Run AutoML to generate prediction inputs.</p>

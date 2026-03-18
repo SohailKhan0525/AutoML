@@ -14,6 +14,8 @@ const defaultSettings = {
 export default function Settings() {
   const { user, token } = useAuth();
   const navigate = useNavigate();
+  const currentPlan = (user?.plan || 'free').toLowerCase() === 'pro' ? 'pro' : 'free';
+  const currentPlanLabel = currentPlan === 'pro' ? 'Pro Plan' : 'Free Plan';
   const [settings, setSettings] = useState(() => {
     const rawSettings = localStorage.getItem(SETTINGS_STORAGE_KEY);
     if (!rawSettings) return defaultSettings;
@@ -331,6 +333,26 @@ export default function Settings() {
                   <p className="text-sm text-slate-600 dark:text-slate-400">{user?.email}</p>
                 </div>
                 <span className="material-symbols-outlined text-green-500">verified</span>
+              </div>
+
+              <div className="flex items-center justify-between border-t border-slate-200 dark:border-slate-700 pt-3">
+                <div>
+                  <p className="font-medium text-slate-900 dark:text-slate-100">Current Plan</p>
+                  <p className="text-sm text-slate-600 dark:text-slate-400">
+                    {currentPlan === 'pro'
+                      ? 'Pro features active: advanced workflow, notebook download, and richer diagnostics.'
+                      : 'Free plan active: upgrade to Pro for advanced workflow and richer diagnostics.'}
+                  </p>
+                </div>
+                <span
+                  className={`px-2 py-1 rounded text-xs font-semibold ${
+                    currentPlan === 'pro'
+                      ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300'
+                      : 'bg-slate-200 text-slate-700 dark:bg-slate-700 dark:text-slate-200'
+                  }`}
+                >
+                  {currentPlanLabel}
+                </span>
               </div>
             </div>
           </div>

@@ -5,6 +5,8 @@ import { useState } from 'react';
 export default function Profile() {
   const { user, logout } = useAuth();
   const navigate = useNavigate();
+  const currentPlan = (user?.plan || 'free').toLowerCase() === 'pro' ? 'pro' : 'free';
+  const currentPlanLabel = currentPlan === 'pro' ? 'Pro Plan' : 'Free Plan';
   const [pageError, setPageError] = useState('');
   const [isLoggingOut, setIsLoggingOut] = useState(false);
 
@@ -98,15 +100,21 @@ export default function Profile() {
                     Current Plan
                   </label>
                   <p className="text-lg font-bold text-blue-900 dark:text-blue-100 mt-1 flex items-center gap-2">
-                    Free Plan
+                    {currentPlanLabel}
                     <span className="material-symbols-outlined text-lg text-blue-500">verified</span>
                   </p>
                 </div>
                 <span className="material-symbols-outlined text-4xl text-blue-400 opacity-30">card_giftcard</span>
               </div>
-              <p className="text-sm text-blue-700 dark:text-blue-300 mt-3">
-                Upgrade for advanced automation, model monitoring, and team workspaces.
-              </p>
+              {currentPlan === 'pro' ? (
+                <p className="text-sm text-blue-700 dark:text-blue-300 mt-3">
+                  Pro is active: advanced workflow, richer diagnostics, and notebook download are enabled.
+                </p>
+              ) : (
+                <p className="text-sm text-blue-700 dark:text-blue-300 mt-3">
+                  Upgrade for advanced automation, model monitoring, and richer workflow diagnostics.
+                </p>
+              )}
             </div>
 
             <div className="bg-slate-50 dark:bg-slate-800/50 rounded-xl p-4 border border-slate-200 dark:border-slate-700">
