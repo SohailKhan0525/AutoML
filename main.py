@@ -84,18 +84,32 @@ logger = logging.getLogger("automl")
 
 @app.exception_handler(Exception)
 async def unhandled_exception_handler(request: Request, exc: Exception):
-    logger.exception("Unhandled server error on %s", request.url.path)
+    request_id = str(uuid4())
+    logger.exception("Unhandled server error on %s request_id=%s", request.url.path, request_id)
     return JSONResponse(
         status_code=500,
-        content={"detail": "Internal server error. Please retry or check server logs."},
+        content={
+            "detail": {
+                "message": "Internal server error. Please retry or check server logs.",
+                "code": "INTERNAL_SERVER_ERROR",
+                "request_id": request_id,
+                "path": request.url.path,
+                "error_type": type(exc).__name__,
+            }
+        },
     )
 
 
 @app.exception_handler(HTTPException)
 async def http_exception_handler(request: Request, exc: HTTPException):
+    request_id = str(uuid4())
     return JSONResponse(
         status_code=exc.status_code,
-        content={"detail": exc.detail},
+        content={
+            "detail": exc.detail,
+            "request_id": request_id,
+            "path": request.url.path,
+        },
     )
 
 
@@ -801,6 +815,7 @@ async def predict(
         categorical_features = artifact.get("categorical_features", [])
         numeric_features = artifact.get("numeric_features", [])
         numeric_limits = artifact.get("numeric_limits", {})
+        unknown_columns = sorted([col for col in provided_columns if col not in set(expected_columns)])
         
         for col in expected_columns:
             if col not in input_df.columns:
@@ -834,7 +849,19 @@ async def predict(
                     numeric_errors.append(f"{col} must be between {min_val} and {max_val}")
 
         if numeric_errors:
-            raise HTTPException(status_code=400, detail="; ".join(dict.fromkeys(numeric_errors)))
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "message": "Prediction input validation failed.",
+                    "code": "PREDICT_VALIDATION_ERROR",
+                    "target_column": selected_target,
+                    "invalid_numeric": list(dict.fromkeys(numeric_errors)),
+                    "provided_columns": sorted(list(provided_columns)),
+                    "expected_columns": expected_columns,
+                    "unknown_columns": unknown_columns,
+                    "numeric_limits": numeric_limits,
+                },
+            )
         
         input_df = input_df[expected_columns]
         
@@ -845,13 +872,27 @@ async def predict(
             "count": len(predictions),
             "predictions": predictions,
             "success": True,
+            "warnings": {
+                "unknown_columns_ignored": unknown_columns,
+            },
         }
         return _json_safe(payload)
     except HTTPException:
         raise
     except Exception as exc:
-        logger.exception("Prediction error")
-        raise HTTPException(status_code=500, detail=f"Prediction failed: {exc}") from exc
+        request_id = str(uuid4())
+        logger.exception("Prediction error request_id=%s", request_id)
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "message": "Prediction failed during model inference.",
+                "code": "PREDICT_INFERENCE_ERROR",
+                "error": str(exc),
+                "error_type": type(exc).__name__,
+                "request_id": request_id,
+                "target_column": target_column,
+            },
+        ) from exc
 
 
 @app.delete("/dataset")

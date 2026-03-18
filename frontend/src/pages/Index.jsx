@@ -41,7 +41,36 @@ const Index = () => {
   const safeError = async (response, fallbackMessage) => {
     try {
       const data = await response.json();
-      return data?.detail || fallbackMessage;
+      const detail = data?.detail;
+
+      if (typeof detail === 'string') {
+        const requestId = data?.request_id ? ` (request_id: ${data.request_id})` : '';
+        return `${detail}${requestId}`;
+      }
+
+      if (detail && typeof detail === 'object') {
+        const lines = [];
+        lines.push(detail.message || fallbackMessage);
+
+        if (detail.code) {
+          lines.push(`Code: ${detail.code}`);
+        }
+        if (Array.isArray(detail.invalid_numeric) && detail.invalid_numeric.length > 0) {
+          lines.push(`Invalid numeric: ${detail.invalid_numeric.join(', ')}`);
+        }
+        if (Array.isArray(detail.unknown_columns) && detail.unknown_columns.length > 0) {
+          lines.push(`Unknown columns ignored: ${detail.unknown_columns.join(', ')}`);
+        }
+
+        const requestId = detail.request_id || data?.request_id;
+        if (requestId) {
+          lines.push(`Request ID: ${requestId}`);
+        }
+
+        return lines.join(' | ');
+      }
+
+      return fallbackMessage;
     } catch {
       return fallbackMessage;
     }
