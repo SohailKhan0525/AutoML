@@ -38,6 +38,33 @@ export default function Settings() {
   const [isSavingSettings, setIsSavingSettings] = useState(false);
   const [isLoadingSettings, setIsLoadingSettings] = useState(true);
 
+  const formatActivityEvent = (eventName) => {
+    const labels = {
+      account_created: 'Account Created',
+      login: 'Login',
+      signin: 'Sign In',
+      password_changed: 'Password Changed',
+      settings_updated: 'Settings Updated',
+      two_factor_enabled: 'Two-Factor Enabled',
+      two_factor_disabled: 'Two-Factor Disabled',
+      dataset_uploaded: 'Dataset Uploaded',
+      dataset_selected: 'Dataset Selected',
+      target_column_changed: 'Target Column Changed',
+      automl_run: 'AutoML Run',
+      report_exported: 'Report Exported',
+      model_downloaded: 'Model Downloaded',
+    };
+    if (!eventName) return 'Activity';
+    return labels[eventName] || eventName.replaceAll('_', ' ').replace(/\b\w/g, (char) => char.toUpperCase());
+  };
+
+  const formatActivityTimestamp = (timestamp) => {
+    if (!timestamp) return 'Unknown time';
+    const parsed = Number(timestamp) * 1000;
+    if (Number.isNaN(parsed)) return 'Unknown time';
+    return new Date(parsed).toLocaleString();
+  };
+
   const recordActivity = async (event, details) => {
     if (!token) return;
     try {
@@ -120,6 +147,41 @@ export default function Settings() {
       }
     } catch {
       setSettingsError('Unable to save preference right now. Please try again.');
+    }
+  };
+
+  const handleTwoFactorToggle = async () => {
+    if (!token) {
+      setSettingsError('You are not authenticated. Please sign in again.');
+      return;
+    }
+
+    const nextEnabled = !settings.twoFactor;
+    setIsSavingSettings(true);
+    setSettingsError('');
+
+    try {
+      const response = await fetch('/api/user/2fa/toggle', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({ enabled: nextEnabled })
+      });
+
+      const data = await response.json();
+      if (!response.ok) {
+        setSettingsError(data.detail || 'Failed to update two-factor setting.');
+        return;
+      }
+
+      setSettings((prev) => ({ ...prev, twoFactor: Boolean(data.two_factor) }));
+      await loadSettingsAndActivity();
+    } catch {
+      setSettingsError('Unable to update two-factor setting right now.');
+    } finally {
+      setIsSavingSettings(false);
     }
   };
 
@@ -358,7 +420,7 @@ export default function Settings() {
                   <input
                     type="checkbox"
                     checked={settings.twoFactor}
-                    onChange={() => handleSettingChange('twoFactor')}
+                    onChange={handleTwoFactorToggle}
                     className="sr-only peer"
                   />
                   <div className="w-11 h-6 bg-slate-300 dark:bg-slate-600 peer-focus:outline-none peer-focus:ring-2 peer-focus:ring-primary/50 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-primary"></div>
@@ -435,8 +497,9 @@ export default function Settings() {
               ) : (
                 activityEntries.map((entry, index) => (
                   <div key={`${entry.timestamp}-${index}`} className="text-sm text-slate-700 dark:text-slate-300 border-b last:border-b-0 border-slate-200 dark:border-slate-700 pb-2 last:pb-0">
-                    <p className="font-medium">{entry.event.replaceAll('_', ' ')}</p>
+                    <p className="font-medium">{formatActivityEvent(entry.event)}</p>
                     <p className="text-xs text-slate-500">{entry.details || 'No details'}</p>
+                    <p className="text-[11px] text-slate-400 mt-1">{formatActivityTimestamp(entry.timestamp)}</p>
                   </div>
                 ))
               )}

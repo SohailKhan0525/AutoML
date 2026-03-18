@@ -8,8 +8,8 @@ from sklearn.compose import ColumnTransformer
 from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
 from sklearn.impute import SimpleImputer
 from sklearn.linear_model import LogisticRegression
-from sklearn.metrics import accuracy_score, f1_score, mean_absolute_error, precision_score, r2_score, recall_score
-from sklearn.model_selection import train_test_split
+from sklearn.metrics import accuracy_score, f1_score, mean_absolute_error, mean_squared_error, precision_score, r2_score, recall_score
+from sklearn.model_selection import RandomizedSearchCV, cross_val_score, train_test_split
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
 from sklearn.tree import DecisionTreeClassifier, DecisionTreeRegressor
@@ -17,6 +17,10 @@ from sklearn.tree import DecisionTreeClassifier, DecisionTreeRegressor
 RANDOM_STATE = 42
 MAX_HIGH_CARDINALITY = 250
 MAX_TRAIN_ROWS = 60000
+FREE_PLAN_MAX_TRAIN_ROWS = 15000
+FREE_PLAN_CV_FOLDS = 0
+PRO_PLAN_CV_FOLDS = 5
+PRO_PLAN_TUNING_ITERATIONS = 8
 
 
 def analyze_dataset(df: pd.DataFrame) -> dict[str, Any]:
@@ -224,6 +228,7 @@ def _drop_high_cardinality_features(X: pd.DataFrame) -> tuple[pd.DataFrame, list
 def run_ml_pipeline(
     df: pd.DataFrame,
     target_column: str | None = None,
+    pricing_plan: str = "free",
     return_best_model: bool = False,
 ) -> Any:
     """Train baseline models and optionally return the best fitted pipeline for serving."""
@@ -234,6 +239,14 @@ def run_ml_pipeline(
     if resolved_target not in df.columns:
         raise ValueError(f"Target column '{resolved_target}' was not found in dataset.")
 
+    normalized_plan = str(pricing_plan or "free").strip().lower()
+    if normalized_plan not in {"free", "pro"}:
+        normalized_plan = "free"
+
+    train_row_limit = MAX_TRAIN_ROWS if normalized_plan == "pro" else FREE_PLAN_MAX_TRAIN_ROWS
+    cv_folds = PRO_PLAN_CV_FOLDS if normalized_plan == "pro" else FREE_PLAN_CV_FOLDS
+    hyperparameter_tuning_enabled = normalized_plan == "pro"
+
     X = df.drop(columns=[resolved_target]).copy()
     y = df[resolved_target].copy()
 
@@ -241,8 +254,8 @@ def run_ml_pipeline(
         raise ValueError("Target column contains only missing values.")
 
     sampled_rows = len(df)
-    if len(df) > MAX_TRAIN_ROWS:
-        sampled = df.sample(n=MAX_TRAIN_ROWS, random_state=RANDOM_STATE)
+    if len(df) > train_row_limit:
+        sampled = df.sample(n=train_row_limit, random_state=RANDOM_STATE)
         X = sampled.drop(columns=[resolved_target]).copy()
         y = sampled[resolved_target].copy()
         sampled_rows = len(sampled)
@@ -263,13 +276,16 @@ def run_ml_pipeline(
                 random_state=RANDOM_STATE,
             ),
             "Decision Tree": DecisionTreeClassifier(random_state=RANDOM_STATE),
-            "Random Forest": RandomForestClassifier(
-                n_estimators=50,
-                max_depth=10,
+        }
+
+        if normalized_plan == "pro":
+            models["Random Forest"] = RandomForestClassifier(
+                n_estimators=120,
+                max_depth=14,
                 random_state=RANDOM_STATE,
                 n_jobs=1,
-            ),
-        }
+            )
+
         metric_name = "accuracy"
         class_counts = y.value_counts(dropna=False)
         should_stratify = bool(class_counts.min() >= 2)
@@ -277,13 +293,16 @@ def run_ml_pipeline(
     else:
         models = {
             "Decision Tree": DecisionTreeRegressor(random_state=RANDOM_STATE),
-            "Random Forest": RandomForestRegressor(
-                n_estimators=50,
-                max_depth=10,
+        }
+
+        if normalized_plan == "pro":
+            models["Random Forest"] = RandomForestRegressor(
+                n_estimators=120,
+                max_depth=14,
                 random_state=RANDOM_STATE,
                 n_jobs=1,
-            ),
-        }
+            )
+
         metric_name = "r2"
         split_kwargs = {"stratify": None}
 
@@ -298,7 +317,17 @@ def run_ml_pipeline(
     model_scores: list[dict[str, Any]] = []
     model_failures: list[dict[str, str]] = []
     trained_random_forest: Pipeline | None = None
+    trained_decision_tree: Pipeline | None = None
     trained_models: dict[str, Pipeline] = {}
+    cross_validation_results: list[dict[str, Any]] = []
+    tuning_summary: dict[str, Any] = {
+        "enabled": hyperparameter_tuning_enabled,
+        "method": "randomized_search" if hyperparameter_tuning_enabled else "none",
+        "best_model": None,
+        "best_score": None,
+        "best_params": {},
+        "n_iter": PRO_PLAN_TUNING_ITERATIONS if hyperparameter_tuning_enabled else 0,
+    }
 
     for model_name, model in models.items():
         try:
@@ -311,9 +340,11 @@ def run_ml_pipeline(
                 precision = precision_score(y_test, preds, average="weighted", zero_division=0)
                 recall = recall_score(y_test, preds, average="weighted", zero_division=0)
                 f1 = f1_score(y_test, preds, average="weighted", zero_division=0)
+                rmse = None
             else:
                 score = r2_score(y_test, preds)
                 mae = mean_absolute_error(y_test, preds)
+                rmse = float(np.sqrt(mean_squared_error(y_test, preds)))
 
             model_scores.append(
                 {
@@ -324,11 +355,34 @@ def run_ml_pipeline(
                     "recall": round(float(recall), 4) if task_type == "classification" else None,
                     "f1_score": round(float(f1), 4) if task_type == "classification" else None,
                     "mae": round(float(mae), 4) if task_type == "regression" else None,
+                    "rmse": round(float(rmse), 4) if task_type == "regression" else None,
                 }
             )
 
+            if cv_folds > 1:
+                cv_metric = "accuracy" if task_type == "classification" else "r2"
+                cv_scores = cross_val_score(
+                    pipeline,
+                    X,
+                    y,
+                    cv=cv_folds,
+                    scoring=cv_metric,
+                    n_jobs=1,
+                )
+                cross_validation_results.append(
+                    {
+                        "model_name": model_name,
+                        "metric_name": cv_metric,
+                        "folds": cv_folds,
+                        "mean_score": round(float(np.mean(cv_scores)), 4),
+                        "std_score": round(float(np.std(cv_scores)), 4),
+                    }
+                )
+
             if model_name == "Random Forest":
                 trained_random_forest = pipeline
+            if model_name == "Decision Tree":
+                trained_decision_tree = pipeline
             trained_models[model_name] = pipeline
         except Exception as exc:
             model_failures.append({"model_name": model_name, "error": str(exc)})
@@ -338,13 +392,110 @@ def run_ml_pipeline(
 
     model_scores.sort(key=lambda x: x["score"], reverse=True)
 
-    feature_importance: list[dict[str, Any]] = []
-    if trained_random_forest is not None:
-        pre = trained_random_forest.named_steps["preprocessor"]
-        rf_model = trained_random_forest.named_steps["model"]
+    if hyperparameter_tuning_enabled and "Random Forest" in models:
+        try:
+            rf_estimator = models["Random Forest"]
+            rf_pipeline = Pipeline(steps=[("preprocessor", preprocessor), ("model", rf_estimator)])
 
+            if task_type == "classification":
+                param_dist = {
+                    "model__n_estimators": [80, 120, 180],
+                    "model__max_depth": [8, 12, 16, None],
+                    "model__min_samples_split": [2, 4, 8],
+                    "model__min_samples_leaf": [1, 2, 4],
+                }
+                tuning_metric = "accuracy"
+            else:
+                param_dist = {
+                    "model__n_estimators": [80, 120, 180],
+                    "model__max_depth": [8, 12, 16, None],
+                    "model__min_samples_split": [2, 4, 8],
+                    "model__min_samples_leaf": [1, 2, 4],
+                }
+                tuning_metric = "r2"
+
+            search = RandomizedSearchCV(
+                estimator=rf_pipeline,
+                param_distributions=param_dist,
+                n_iter=PRO_PLAN_TUNING_ITERATIONS,
+                cv=max(3, cv_folds),
+                scoring=tuning_metric,
+                random_state=RANDOM_STATE,
+                n_jobs=1,
+                refit=True,
+            )
+            search.fit(X_train, y_train)
+
+            tuned_pipeline = search.best_estimator_
+            tuned_preds = tuned_pipeline.predict(X_test)
+
+            if task_type == "classification":
+                tuned_score = accuracy_score(y_test, tuned_preds)
+                tuned_precision = precision_score(y_test, tuned_preds, average="weighted", zero_division=0)
+                tuned_recall = recall_score(y_test, tuned_preds, average="weighted", zero_division=0)
+                tuned_f1 = f1_score(y_test, tuned_preds, average="weighted", zero_division=0)
+
+                tuned_result = {
+                    "model_name": "Random Forest (Tuned)",
+                    "metric_name": metric_name,
+                    "score": round(float(tuned_score), 4),
+                    "precision": round(float(tuned_precision), 4),
+                    "recall": round(float(tuned_recall), 4),
+                    "f1_score": round(float(tuned_f1), 4),
+                    "mae": None,
+                    "rmse": None,
+                }
+            else:
+                tuned_score = r2_score(y_test, tuned_preds)
+                tuned_mae = mean_absolute_error(y_test, tuned_preds)
+                tuned_rmse = float(np.sqrt(mean_squared_error(y_test, tuned_preds)))
+
+                tuned_result = {
+                    "model_name": "Random Forest (Tuned)",
+                    "metric_name": metric_name,
+                    "score": round(float(tuned_score), 4),
+                    "precision": None,
+                    "recall": None,
+                    "f1_score": None,
+                    "mae": round(float(tuned_mae), 4),
+                    "rmse": round(float(tuned_rmse), 4),
+                }
+
+            model_scores = [
+                score_item
+                for score_item in model_scores
+                if score_item["model_name"] != "Random Forest"
+            ]
+            model_scores.append(tuned_result)
+            model_scores.sort(key=lambda x: x["score"], reverse=True)
+
+            trained_random_forest = tuned_pipeline
+            trained_models["Random Forest (Tuned)"] = tuned_pipeline
+
+            tuning_summary = {
+                "enabled": True,
+                "method": "randomized_search",
+                "best_model": "Random Forest (Tuned)",
+                "best_score": round(float(search.best_score_), 4),
+                "best_params": {k: v for k, v in search.best_params_.items()},
+                "n_iter": PRO_PLAN_TUNING_ITERATIONS,
+            }
+        except Exception as exc:
+            model_failures.append({"model_name": "Random Forest (Tuned)", "error": f"Tuning failed: {exc}"})
+
+    feature_importance: list[dict[str, Any]] = []
+    importance_pipeline = trained_random_forest or trained_decision_tree
+    feature_model = None
+    if importance_pipeline is not None:
+        pre = importance_pipeline.named_steps["preprocessor"]
+        feature_model = importance_pipeline.named_steps["model"]
+
+        if not hasattr(feature_model, "feature_importances_"):
+            feature_model = None
+
+    if importance_pipeline is not None and feature_model is not None:
         transformed_features = pre.get_feature_names_out()
-        importances = rf_model.feature_importances_
+        importances = feature_model.feature_importances_
         top_indices = np.argsort(importances)[::-1][:10]
 
         feature_importance = [
@@ -367,6 +518,32 @@ def run_ml_pipeline(
     best_model = trained_models.get(best_model_name)
 
     result = {
+        "pricing_plan": normalized_plan,
+        "workflow_mode": "Advanced Mode" if normalized_plan == "pro" else "Fast Mode",
+        "plan_limits": {
+            "max_train_rows": int(train_row_limit),
+            "advanced_models_enabled": normalized_plan == "pro",
+            "cross_validation_folds": int(cv_folds),
+            "hyperparameter_tuning_enabled": hyperparameter_tuning_enabled,
+        },
+        "workflow_steps": [
+            "Import libraries",
+            "Load dataset",
+            "Explore data (EDA)",
+            "Handle missing values",
+            "Encode categorical variables",
+            "Feature engineering",
+            "Split data",
+            "Scale/normalize features",
+            "Choose model",
+            "Train model",
+            "Make predictions",
+            "Evaluate model",
+            "Hyperparameter tuning",
+            "Cross-validation",
+            "Save model",
+            "Deploy model",
+        ],
         "task_type": task_type,
         "target_column": str(resolved_target),
         "numeric_feature_count": len(numeric_features),
@@ -377,6 +554,8 @@ def run_ml_pipeline(
         "quality_score": quality_score,
         "auto_insights": auto_insights,
         "model_scores": model_scores,
+        "cross_validation": cross_validation_results,
+        "hyperparameter_tuning": tuning_summary,
         "model_failures": model_failures,
         "feature_importance": feature_importance,
     }

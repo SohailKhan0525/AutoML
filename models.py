@@ -26,6 +26,7 @@ class User(Base):
         return {
             "id": self.id,
             "email": self.email,
+            "plan": "free",
             "created_at": self.created_at.isoformat() if self.created_at else None,
         }
 

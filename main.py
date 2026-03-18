@@ -49,6 +49,10 @@ class ActivityRequest(BaseModel):
     event: str
     details: str | None = None
 
+
+class TwoFactorToggleRequest(BaseModel):
+    enabled: bool
+
 app = FastAPI(title="AutoML Dataset Analyzer", version="0.1.0")
 
 # Serve React static assets
@@ -228,7 +232,19 @@ def _default_user_settings() -> dict[str, bool]:
     }
 
 
-def _append_user_activity(user_id: str, event: str, details: str | None = None) -> None:
+def _normalize_pricing_plan(plan: str | None) -> str:
+    normalized = str(plan or "free").strip().lower()
+    if normalized not in {"free", "pro"}:
+        return "free"
+    return normalized
+
+
+def _append_user_activity(user_id: str, event: str, details: str | None = None, force: bool = False) -> None:
+    if not force:
+        settings = app.state.user_settings.get(user_id, _default_user_settings())
+        if not settings.get("activity_log", True):
+            return
+
     entries = app.state.user_activity.setdefault(user_id, [])
     entries.insert(
         0,
@@ -362,14 +378,52 @@ async def update_user_settings(
 ):
     """Update current user's settings."""
     user = _resolve_user_from_auth_header(authorization, db)
-    app.state.user_settings[user.id] = {
+    previous_settings = app.state.user_settings.get(user.id, _default_user_settings())
+    updated_settings = {
         "dark_mode": request.dark_mode,
         "email_notifications": request.email_notifications,
         "activity_log": request.activity_log,
         "two_factor": request.two_factor,
     }
-    _append_user_activity(user.id, "settings_updated", "Updated account preferences")
-    return {"message": "Settings updated.", "settings": app.state.user_settings[user.id]}
+    app.state.user_settings[user.id] = updated_settings
+
+    changed_details: list[str] = []
+    if previous_settings.get("dark_mode") != updated_settings["dark_mode"]:
+        changed_details.append(
+            "Dark mode turned on" if updated_settings["dark_mode"] else "Dark mode turned off"
+        )
+    if previous_settings.get("email_notifications") != updated_settings["email_notifications"]:
+        changed_details.append(
+            "Email notifications turned on"
+            if updated_settings["email_notifications"]
+            else "Email notifications turned off"
+        )
+    if previous_settings.get("activity_log") != updated_settings["activity_log"]:
+        changed_details.append(
+            "Activity logging turned on"
+            if updated_settings["activity_log"]
+            else "Activity logging turned off"
+        )
+    if previous_settings.get("two_factor") != updated_settings["two_factor"]:
+        changed_details.append(
+            "Two-factor authentication turned on"
+            if updated_settings["two_factor"]
+            else "Two-factor authentication turned off"
+        )
+
+    if changed_details:
+        _append_user_activity(
+            user.id,
+            "settings_updated",
+            "; ".join(changed_details),
+            force=True,
+        )
+
+    return {
+        "message": "Settings updated.",
+        "settings": app.state.user_settings[user.id],
+        "changes": changed_details,
+    }
 
 
 @app.get("/api/user/activity")
@@ -397,6 +451,28 @@ async def add_user_activity(
         raise HTTPException(status_code=400, detail="Event is required.")
     _append_user_activity(user.id, event, request.details)
     return {"message": "Activity recorded."}
+
+
+@app.post("/api/user/2fa/toggle")
+async def toggle_two_factor(
+    request: TwoFactorToggleRequest,
+    authorization: str | None = Header(None),
+    db: Session = Depends(get_db),
+):
+    """Enable or disable two-factor auth flag for the current user."""
+    user = _resolve_user_from_auth_header(authorization, db)
+    current_settings = app.state.user_settings.get(user.id, _default_user_settings())
+    current_settings["two_factor"] = bool(request.enabled)
+    app.state.user_settings[user.id] = current_settings
+
+    event_name = "two_factor_enabled" if request.enabled else "two_factor_disabled"
+    details = "Two-factor authentication enabled" if request.enabled else "Two-factor authentication disabled"
+    _append_user_activity(user.id, event_name, details)
+
+    return {
+        "message": "Two-factor updated successfully.",
+        "two_factor": current_settings["two_factor"],
+    }
 
 
 @app.get("/api/health")
@@ -541,33 +617,42 @@ async def dataset_summary(dataset_id: str | None = None, preview_rows: int = 5):
 async def run_automl(
     dataset_id: str | None = None,
     target_column: str | None = Query(default=None),
+    x_pricing_plan: str | None = Header(default=None, alias="X-Pricing-Plan"),
 ):
     """Train models for a dataset and selected target with per-target caching."""
     dataset = _get_dataset(dataset_id)
     df = dataset["df"]
     filename = dataset["filename"]
     selected_target = target_column or str(df.columns[-1])
+    pricing_plan = _normalize_pricing_plan(x_pricing_plan)
 
-    automl_cache_hit = selected_target in dataset["automl_cache"]
+    cached_entry = dataset["automl_cache"].get(selected_target)
+    automl_cache_hit = bool(cached_entry and cached_entry.get("plan") == pricing_plan)
     if not automl_cache_hit:
         try:
             async with app.state.automl_lock:
                 # Re-check inside lock in case another request already trained this target.
-                if selected_target in dataset["automl_cache"]:
-                    ml_results = dataset["automl_cache"][selected_target]
+                refreshed_cache_entry = dataset["automl_cache"].get(selected_target)
+                if refreshed_cache_entry and refreshed_cache_entry.get("plan") == pricing_plan:
+                    ml_results = refreshed_cache_entry["results"]
                     automl_cache_hit = True
                 else:
                     start = perf_counter()
                     ml_results, best_model = run_ml_pipeline(
                         df,
                         target_column=selected_target,
+                        pricing_plan=pricing_plan,
                         return_best_model=True,
                     )
                     ml_results["execution_time_ms"] = round((perf_counter() - start) * 1000, 2)
-                    dataset["automl_cache"][selected_target] = ml_results
+                    dataset["automl_cache"][selected_target] = {
+                        "plan": pricing_plan,
+                        "results": ml_results,
+                    }
                     dataset["model_artifacts"][selected_target] = {
                         "blob": pickle.dumps(best_model),
                         "trained_at": time.time(),
+                        "plan": pricing_plan,
                         "feature_columns": [c for c in df.columns if c != selected_target],
                     }
         except ValueError as exc:
@@ -575,13 +660,14 @@ async def run_automl(
         except Exception as exc:
             raise HTTPException(status_code=500, detail=f"ML pipeline failed: {exc}") from exc
     else:
-        ml_results = dataset["automl_cache"][selected_target]
+        ml_results = cached_entry["results"]
 
     payload = {
         "dataset_id": dataset["id"],
         "filename": filename,
         "ml_results": ml_results,
         "target_column": selected_target,
+        "pricing_plan": pricing_plan,
         "automl_cache_hit": automl_cache_hit,
     }
     return _json_safe(payload)
