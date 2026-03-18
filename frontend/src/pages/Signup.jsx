@@ -2,9 +2,24 @@ import React, { useState, useEffect } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 
+const GoogleIcon = () => (
+  <svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true">
+    <path fill="#EA4335" d="M12 10.2v3.9h5.5c-.2 1.3-.9 2.4-2 3.1l3.2 2.5c1.9-1.7 3-4.2 3-7.2 0-.7-.1-1.4-.2-2.1H12z" />
+    <path fill="#34A853" d="M12 22c2.7 0 4.9-.9 6.5-2.4l-3.2-2.5c-.9.6-2 1-3.3 1-2.6 0-4.8-1.8-5.6-4.2H3v2.6C4.6 19.8 8 22 12 22z" />
+    <path fill="#FBBC05" d="M6.4 13.9c-.2-.6-.3-1.2-.3-1.9s.1-1.3.3-1.9V7.5H3A9.9 9.9 0 0 0 2 12c0 1.6.4 3.1 1 4.5l3.4-2.6z" />
+    <path fill="#4285F4" d="M12 5.9c1.5 0 2.8.5 3.8 1.4l2.8-2.8C16.9 2.9 14.7 2 12 2 8 2 4.6 4.2 3 7.5l3.4 2.6C7.2 7.7 9.4 5.9 12 5.9z" />
+  </svg>
+);
+
+const GitHubIcon = () => (
+  <svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true" className="fill-slate-700 dark:fill-slate-200">
+    <path d="M12 .5C5.65.5.5 5.8.5 12.35c0 5.25 3.3 9.7 7.9 11.27.58.1.8-.26.8-.58 0-.28-.01-1.04-.02-2.04-3.2.72-3.88-1.58-3.88-1.58-.52-1.37-1.28-1.73-1.28-1.73-1.05-.73.08-.71.08-.71 1.16.08 1.78 1.23 1.78 1.23 1.03 1.82 2.7 1.3 3.36.99.1-.77.4-1.3.72-1.6-2.56-.3-5.25-1.33-5.25-5.94 0-1.31.46-2.37 1.22-3.2-.12-.3-.53-1.5.11-3.12 0 0 1-.33 3.3 1.22a11.1 11.1 0 0 1 6 0c2.3-1.55 3.3-1.22 3.3-1.22.64 1.62.23 2.82.11 3.12.76.83 1.22 1.89 1.22 3.2 0 4.62-2.7 5.63-5.28 5.93.42.37.79 1.1.79 2.23 0 1.61-.02 2.9-.02 3.29 0 .32.21.69.81.58 4.6-1.58 7.89-6.02 7.89-11.27C23.5 5.8 18.35.5 12 .5z" />
+  </svg>
+);
+
 const Signup = () => {
   const navigate = useNavigate();
-  const { signup, user } = useAuth();
+  const { signup, startOAuth, user } = useAuth();
   
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -12,6 +27,7 @@ const Signup = () => {
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
   const [validationErrors, setValidationErrors] = useState({});
+  const [oauthLoading, setOauthLoading] = useState('');
 
   // Redirect if already logged in
   useEffect(() => {
@@ -63,6 +79,17 @@ const Signup = () => {
       setError(err.message || 'Signup failed. Please try again.');
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleOAuth = async (provider) => {
+    setError('');
+    setOauthLoading(provider);
+    try {
+      await startOAuth(provider);
+    } catch (err) {
+      setError(err.message || `${provider} OAuth failed. Please try again.`);
+      setOauthLoading('');
     }
   };
 
@@ -208,6 +235,27 @@ const Signup = () => {
             Already have an account?
             <Link to="/signin" className="text-primary font-semibold hover:underline ml-1">Sign In</Link>
           </p>
+
+          <div className="mt-6 grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <button
+              type="button"
+              onClick={() => handleOAuth('github')}
+              disabled={Boolean(oauthLoading)}
+              className="w-full border-2 border-slate-200 dark:border-slate-700 rounded-lg px-4 py-3 text-sm font-semibold text-slate-700 dark:text-slate-200 bg-white dark:bg-slate-800 hover:border-primary dark:hover:border-primary transition-colors disabled:opacity-60 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+            >
+              <GitHubIcon />
+              <span>{oauthLoading === 'github' ? 'Connecting...' : 'Sign up with GitHub'}</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => handleOAuth('google')}
+              disabled={Boolean(oauthLoading)}
+              className="w-full border-2 border-slate-200 dark:border-slate-700 rounded-lg px-4 py-3 text-sm font-semibold text-slate-700 dark:text-slate-200 bg-white dark:bg-slate-800 hover:border-primary dark:hover:border-primary transition-colors disabled:opacity-60 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+            >
+              <GoogleIcon />
+              <span>{oauthLoading === 'google' ? 'Connecting...' : 'Sign up with Google'}</span>
+            </button>
+          </div>
         </div>
 
         {/* Trust Badges */}

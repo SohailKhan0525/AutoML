@@ -11,6 +11,7 @@ const Dashboard = () => {
   const [redirectCountdown, setRedirectCountdown] = useState(8);
   const [userMenuOpen, setUserMenuOpen] = useState(false);
   const [pageError, setPageError] = useState('');
+  const [isLoggingOut, setIsLoggingOut] = useState(false);
   const userMenuRef = useRef(null);
 
   // Check for auto=1 query parameter
@@ -63,14 +64,19 @@ const Dashboard = () => {
     }
   };
 
-  const handleLogout = () => {
+  const handleLogout = async () => {
+    if (isLoggingOut) return;
+
     try {
       setPageError('');
-      logout();
+      setIsLoggingOut(true);
       setUserMenuOpen(false);
+      await new Promise((resolve) => setTimeout(resolve, 850));
+      logout();
       navigate('/landing');
     } catch {
       setPageError('Unable to log out right now. Please refresh and try again.');
+      setIsLoggingOut(false);
     }
   };
 
@@ -114,16 +120,31 @@ const Dashboard = () => {
               </button>
               <button
                 onClick={handleLogout}
-                className="w-full flex items-center gap-3 px-4 py-3 hover:bg-slate-50 dark:hover:bg-slate-700 text-red-600 dark:text-red-400 transition-colors text-left"
+                disabled={isLoggingOut}
+                className="w-full flex items-center gap-3 px-4 py-3 hover:bg-slate-50 dark:hover:bg-slate-700 text-red-600 dark:text-red-400 transition-colors text-left disabled:opacity-60 disabled:cursor-not-allowed"
                 type="button"
               >
-                <span className="material-symbols-outlined text-base">logout</span>
-                <span className="text-sm">Logout</span>
+                <span className="material-symbols-outlined text-base">
+                  {isLoggingOut ? 'hourglass_top' : 'logout'}
+                </span>
+                <span className="text-sm">{isLoggingOut ? 'Logging Out' : 'Logout'}</span>
               </button>
             </div>
           </div>
         </div>
       </nav>
+
+      {isLoggingOut && (
+        <div className="logout-overlay fixed inset-0 bg-slate-900/40 backdrop-blur-sm z-[60] flex items-center justify-center px-4">
+          <div className="logout-chip bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-2xl shadow-2xl px-6 py-5 flex items-center gap-3">
+            <span className="material-symbols-outlined text-primary animate-spin">progress_activity</span>
+            <div>
+              <p className="font-semibold text-slate-900 dark:text-slate-100">Logging Out</p>
+              <p className="text-sm text-slate-500 dark:text-slate-400">Securing your session...</p>
+            </div>
+          </div>
+        </div>
+      )}
 
       {pageError && (
         <div className="max-w-7xl mx-auto px-4 sm:px-6 mb-4">

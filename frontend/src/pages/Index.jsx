@@ -12,6 +12,15 @@ const correlationColorClass = (value) => {
   return 'bg-slate-100 text-slate-700 dark:bg-slate-700 dark:text-slate-200';
 };
 
+const correlationStrengthLabel = (value) => {
+  const absValue = Math.abs(Number(value) || 0);
+  if (absValue >= 0.85) return 'Very strong';
+  if (absValue >= 0.7) return 'Strong';
+  if (absValue >= 0.4) return 'Moderate';
+  if (absValue >= 0.1) return 'Weak';
+  return 'Very weak';
+};
+
 const Index = () => {
   const navigate = useNavigate();
   const { user, token } = useAuth();
@@ -31,6 +40,7 @@ const Index = () => {
   const [targetColumn, setTargetColumn] = useState('');
   const [predictionInputs, setPredictionInputs] = useState({});
   const [predictionOutput, setPredictionOutput] = useState('Predictions will appear here.');
+  const [predictionResult, setPredictionResult] = useState(null);
   const [isPredicting, setIsPredicting] = useState(false);
 
   const pricingPlan = (user?.plan || 'free').toLowerCase() === 'pro' ? 'pro' : 'free';
@@ -215,6 +225,7 @@ const Index = () => {
       const response = await fetch(`/run-automl?${queryParams.toString()}`, {
         method: 'POST',
         headers: {
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
           'X-Pricing-Plan': pricingPlan
         }
       });
@@ -283,7 +294,41 @@ const Index = () => {
       queryParams.set('target_column', targetColumn);
     }
 
-    window.open(`/notebook/download?${queryParams.toString()}`, '_blank', 'noopener,noreferrer');
+    try {
+      setIsBusy(true);
+      setPageError('');
+
+      const response = await fetch(`/notebook/download?${queryParams.toString()}`, {
+        method: 'GET',
+        headers: {
+          ...(token ? { Authorization: `Bearer ${token}` } : {})
+        }
+      });
+
+      if (!response.ok) {
+        throw new Error(await safeError(response, 'Notebook download failed.'));
+      }
+
+      const blob = await response.blob();
+      const contentDisposition = response.headers.get('content-disposition') || '';
+      const filenameMatch = contentDisposition.match(/filename="?([^\"]+)"?/i);
+      const filename = filenameMatch?.[1] || `automl_${id}.ipynb`;
+
+      const blobUrl = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = blobUrl;
+      link.download = filename;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(blobUrl);
+    } catch (error) {
+      setPageError(error.message || 'Notebook download failed.');
+      return;
+    } finally {
+      setIsBusy(false);
+    }
+
     await recordActivity('notebook_downloaded', `Downloaded notebook for dataset ${id}${targetColumn ? ` with target ${targetColumn}` : ''}`);
   };
 
@@ -435,10 +480,12 @@ const Index = () => {
       }
 
       const data = await response.json();
+      setPredictionResult(data);
       setPredictionOutput(JSON.stringify(data, null, 2));
       await recordActivity('prediction_run', `Prediction generated for dataset ${id} with target ${resolvedTargetColumn || 'auto(last column)'}`);
     } catch (error) {
       const errorMessage = error.message || 'Prediction failed.';
+      setPredictionResult(null);
       setPageError(errorMessage);
       setPredictionOutput(`Prediction failed\n${errorMessage}`);
     } finally {
@@ -446,25 +493,52 @@ const Index = () => {
     }
   };
 
-  const correlationCells = useMemo(() => {
-    if (!correlation?.available || !Array.isArray(correlation.matrix) || !Array.isArray(correlation.columns)) {
-      return [];
-    }
+  const formatPercent = (value) => {
+    const num = Number(value);
+    if (Number.isNaN(num)) return 'N/A';
+    return `${(num * 100).toFixed(1)}%`;
+  };
 
-    return correlation.matrix.flatMap((row, rowIndex) =>
-      row.map((value, colIndex) => ({
-        rowIndex,
-        colIndex,
-        value: Number(value) || 0,
-        key: `${rowIndex}-${colIndex}`
-      }))
-    );
+  const correlationDisplayColumns = useMemo(() => (
+    Array.isArray(correlation?.columns) ? correlation.columns : []
+  ), [correlation]);
+
+  const correlationDisplayMatrix = useMemo(() => (
+    Array.isArray(correlation?.matrix) ? correlation.matrix : []
+  ), [correlation]);
+
+  const correlationInsights = useMemo(() => {
+    const topPairs = Array.isArray(correlation?.top_pairs) ? correlation.top_pairs : [];
+    const strongestPositive = topPairs.find((pair) => Number(pair?.correlation) > 0) || null;
+    const strongestNegative = topPairs.find((pair) => Number(pair?.correlation) < 0) || null;
+    const multicollinearityPairs = topPairs.filter((pair) => Math.abs(Number(pair?.correlation) || 0) >= 0.85).length;
+
+    return {
+      strongestPositive,
+      strongestNegative,
+      multicollinearityPairs,
+    };
   }, [correlation]);
 
-  const topFeatureImportance = (mlResults?.feature_importance || []).slice(0, 8);
+  const sortedFeatureImportance = useMemo(() => {
+    const rows = Array.isArray(mlResults?.feature_importance) ? mlResults.feature_importance : [];
+    return rows
+      .map((item) => ({
+        feature: String(item?.feature || 'unknown_feature'),
+        importance: Number(item?.importance) || 0,
+      }))
+      .filter((item) => item.importance > 0)
+      .sort((a, b) => b.importance - a.importance);
+  }, [mlResults]);
+
+  const topFeatureImportance = sortedFeatureImportance.slice(0, 10);
   const maxImportance = topFeatureImportance.length > 0
     ? Math.max(...topFeatureImportance.map((item) => Number(item.importance) || 0.0001))
     : 1;
+  const totalImportance = sortedFeatureImportance.reduce((sum, item) => sum + item.importance, 0);
+  const topFeatureCoveragePct = totalImportance > 0
+    ? (topFeatureImportance.reduce((sum, item) => sum + item.importance, 0) / totalImportance) * 100
+    : 0;
 
   return (
     <div className="bg-background-light dark:bg-background-dark font-display text-slate-900 dark:text-slate-100 min-h-screen md:h-screen flex overflow-hidden">
@@ -645,24 +719,75 @@ const Index = () => {
                     <span className="material-symbols-outlined text-primary">grid_view</span>
                     Correlation Matrix
                   </h3>
+                  <p className="text-xs text-slate-500 mb-4">
+                    Correlation ranges from -1 to +1. Positive values move together, negative values move in opposite directions.
+                  </p>
 
                   {!correlation?.available ? (
                     <p className="text-sm text-slate-500">Upload a dataset with numeric columns to render the correlation heatmap.</p>
                   ) : (
                     <div className="space-y-3">
-                      <div className="grid grid-cols-8 gap-1">
-                        {correlationCells.map((cell) => (
-                          <div key={cell.key} className={`aspect-square rounded text-[10px] flex items-center justify-center ${correlationColorClass(cell.value)}`}>
-                            {cell.value.toFixed(2)}
-                          </div>
-                        ))}
+                      <div className="overflow-x-auto">
+                        <table className="w-full min-w-[420px] text-[10px] border-separate border-spacing-1">
+                          <thead>
+                            <tr>
+                              <th className="text-left p-1 text-slate-500">Feature</th>
+                              {correlationDisplayColumns.map((colName) => (
+                                <th key={`corr-head-${colName}`} className="p-1 text-slate-500 font-medium truncate max-w-[72px]" title={colName}>
+                                  {colName}
+                                </th>
+                              ))}
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {correlationDisplayColumns.map((rowName, rowIndex) => (
+                              <tr key={`corr-row-${rowName}`}>
+                                <th className="p-1 text-left text-slate-600 dark:text-slate-300 font-medium truncate max-w-[90px]" title={rowName}>
+                                  {rowName}
+                                </th>
+                                {(correlationDisplayMatrix[rowIndex] || []).map((rawValue, colIndex) => {
+                                  const value = Number(rawValue) || 0;
+                                  const isDiagonal = rowIndex === colIndex;
+                                  return (
+                                    <td
+                                      key={`corr-cell-${rowIndex}-${colIndex}`}
+                                      title={`${rowName} vs ${correlationDisplayColumns[colIndex]}: ${value.toFixed(3)} (${correlationStrengthLabel(value)})`}
+                                      className={`p-1 rounded text-center ${correlationColorClass(value)} ${isDiagonal ? 'ring-1 ring-inset ring-white/70 dark:ring-slate-200/30' : ''}`}
+                                    >
+                                      {value.toFixed(2)}
+                                    </td>
+                                  );
+                                })}
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
                       </div>
-                      <div className="text-xs text-slate-500 space-y-1">
-                        {(correlation.top_pairs || []).slice(0, 5).map((pair, idx) => (
-                          <p key={`${pair.feature_1}-${pair.feature_2}-${idx}`}>
-                            {pair.feature_1} vs {pair.feature_2}: {pair.correlation}
-                          </p>
-                        ))}
+
+                      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-[10px]">
+                        <div className="rounded px-2 py-1 bg-blue-700 text-white">Strong positive</div>
+                        <div className="rounded px-2 py-1 bg-blue-200 text-blue-900">Weak positive</div>
+                        <div className="rounded px-2 py-1 bg-red-200 text-red-900">Weak negative</div>
+                        <div className="rounded px-2 py-1 bg-red-700 text-white">Strong negative</div>
+                      </div>
+
+                      <div className="text-xs text-slate-600 dark:text-slate-300 space-y-1 bg-slate-50 dark:bg-slate-800/60 rounded-lg p-3 border border-slate-200 dark:border-slate-700">
+                        <p className="font-semibold text-slate-700 dark:text-slate-200">Interpretation</p>
+                        <p>
+                          Strongest positive pair:{' '}
+                          {correlationInsights.strongestPositive
+                            ? `${correlationInsights.strongestPositive.feature_1} and ${correlationInsights.strongestPositive.feature_2} (${Number(correlationInsights.strongestPositive.correlation).toFixed(3)})`
+                            : 'Not enough positive signal in top pairs.'}
+                        </p>
+                        <p>
+                          Strongest negative pair:{' '}
+                          {correlationInsights.strongestNegative
+                            ? `${correlationInsights.strongestNegative.feature_1} and ${correlationInsights.strongestNegative.feature_2} (${Number(correlationInsights.strongestNegative.correlation).toFixed(3)})`
+                            : 'No strong inverse relationship found.'}
+                        </p>
+                        <p>
+                          Potential multicollinearity pairs (|corr| ≥ 0.85): {correlationInsights.multicollinearityPairs}
+                        </p>
                       </div>
                     </div>
                   )}
@@ -673,6 +798,9 @@ const Index = () => {
                     <span className="material-symbols-outlined text-primary">bar_chart</span>
                     Feature Importance
                   </h3>
+                  <p className="text-xs text-slate-500 mb-4">
+                    Higher values indicate stronger model influence. This is predictive importance, not proof of causation.
+                  </p>
 
                   {topFeatureImportance.length === 0 ? (
                     <p className="text-sm text-slate-500">Run AutoML to populate feature importance list.</p>
@@ -680,19 +808,35 @@ const Index = () => {
                     <div className="space-y-3">
                       {topFeatureImportance.map((item) => {
                         const importance = Number(item.importance) || 0;
+                        const sharePct = totalImportance > 0 ? (importance / totalImportance) * 100 : 0;
                         const width = Math.max(4, (importance / maxImportance) * 100);
                         return (
                           <div key={item.feature}>
                             <div className="flex items-center justify-between text-xs mb-1">
                               <span className="truncate mr-2">{item.feature}</span>
-                              <span>{importance.toFixed(4)}</span>
+                              <span className="text-right">
+                                <span className="font-semibold">{importance.toFixed(4)}</span>
+                                <span className="text-slate-500"> ({sharePct.toFixed(1)}%)</span>
+                              </span>
                             </div>
                             <div className="w-full h-2 rounded bg-slate-100 dark:bg-slate-700">
-                              <div className="h-2 rounded bg-primary" style={{ width: `${width}%` }}></div>
+                              <div className="h-2 rounded bg-gradient-to-r from-primary to-cyan-500" style={{ width: `${width}%` }}></div>
                             </div>
                           </div>
                         );
                       })}
+
+                      <div className="text-xs text-slate-600 dark:text-slate-300 bg-slate-50 dark:bg-slate-800/60 rounded-lg p-3 border border-slate-200 dark:border-slate-700 space-y-1">
+                        <p>
+                          Top feature: <span className="font-semibold">{topFeatureImportance[0]?.feature}</span>
+                        </p>
+                        <p>
+                          Top {topFeatureImportance.length} features explain about <span className="font-semibold">{topFeatureCoveragePct.toFixed(1)}%</span> of total measured importance.
+                        </p>
+                        <p className="text-slate-500 dark:text-slate-400">
+                          If one feature dominates heavily, check for leakage or unstable inputs before deployment.
+                        </p>
+                      </div>
                     </div>
                   )}
                 </div>
@@ -881,7 +1025,98 @@ const Index = () => {
                       <span className="text-xs text-slate-500">Target: {resolvedTargetColumn || 'Auto (last column)'}</span>
                     </div>
 
-                    <pre className="text-xs bg-slate-50 dark:bg-slate-800 rounded-lg p-3 overflow-auto">{predictionOutput}</pre>
+                    {!predictionResult ? (
+                      <pre className="text-xs bg-slate-50 dark:bg-slate-800 rounded-lg p-3 overflow-auto">{predictionOutput}</pre>
+                    ) : (
+                      <div className="space-y-3">
+                        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                          <div className="rounded-lg border border-slate-200 dark:border-slate-700 p-3 bg-slate-50 dark:bg-slate-800/60">
+                            <p className="text-[10px] uppercase tracking-wider text-slate-500">Predictions</p>
+                            <p className="text-lg font-bold mt-1">{predictionResult.count ?? predictionResult.predictions?.length ?? 0}</p>
+                          </div>
+                          <div className="rounded-lg border border-slate-200 dark:border-slate-700 p-3 bg-slate-50 dark:bg-slate-800/60">
+                            <p className="text-[10px] uppercase tracking-wider text-slate-500">Avg Confidence</p>
+                            <p className="text-lg font-bold mt-1">
+                              {predictionResult.average_confidence != null ? formatPercent(predictionResult.average_confidence) : 'N/A'}
+                            </p>
+                          </div>
+                          <div className="rounded-lg border border-slate-200 dark:border-slate-700 p-3 bg-slate-50 dark:bg-slate-800/60">
+                            <p className="text-[10px] uppercase tracking-wider text-slate-500">Probability Mode</p>
+                            <p className="text-lg font-bold mt-1">
+                              {predictionResult.probability_available ? 'Available' : 'Unavailable'}
+                            </p>
+                          </div>
+                        </div>
+
+                        {predictionResult.prediction_explanation && (
+                          <div className="rounded-lg border border-blue-200 dark:border-blue-800 p-3 bg-blue-50 dark:bg-blue-900/20 text-xs text-blue-900 dark:text-blue-200">
+                            {predictionResult.prediction_explanation}
+                          </div>
+                        )}
+
+                        <div className="rounded-lg border border-slate-200 dark:border-slate-700 overflow-hidden">
+                          <div className="px-3 py-2 bg-slate-100 dark:bg-slate-800 border-b border-slate-200 dark:border-slate-700">
+                            <p className="text-xs font-semibold">Prediction Details</p>
+                          </div>
+                          <div className="overflow-x-auto">
+                            <table className="w-full text-xs">
+                              <thead className="bg-white dark:bg-slate-900 text-slate-500 uppercase tracking-wider text-[10px]">
+                                <tr>
+                                  <th className="text-left px-3 py-2">#</th>
+                                  <th className="text-left px-3 py-2">Prediction</th>
+                                  <th className="text-left px-3 py-2">Confidence</th>
+                                  <th className="text-left px-3 py-2">Class Probabilities</th>
+                                </tr>
+                              </thead>
+                              <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+                                {(predictionResult.predictions || []).slice(0, 20).map((pred, idx) => {
+                                  const confidence = predictionResult.confidence_scores?.[idx];
+                                  const probs = predictionResult.prediction_probabilities?.[idx] || null;
+                                  return (
+                                    <tr key={`pred-${idx}`}>
+                                      <td className="px-3 py-2 font-semibold">{idx + 1}</td>
+                                      <td className="px-3 py-2">{String(pred)}</td>
+                                      <td className="px-3 py-2">{confidence != null ? formatPercent(confidence) : 'N/A'}</td>
+                                      <td className="px-3 py-2">
+                                        {!probs ? (
+                                          <span className="text-slate-500">N/A</span>
+                                        ) : (
+                                          <div className="space-y-1">
+                                            {Object.entries(probs)
+                                              .sort((a, b) => Number(b[1]) - Number(a[1]))
+                                              .map(([label, prob]) => (
+                                                <div key={`${idx}-${label}`} className="flex items-center gap-2">
+                                                  <span className="min-w-16 text-slate-600 dark:text-slate-300">{label}</span>
+                                                  <div className="flex-1 h-1.5 rounded bg-slate-200 dark:bg-slate-700">
+                                                    <div className="h-1.5 rounded bg-primary" style={{ width: `${Math.max(2, Number(prob) * 100)}%` }}></div>
+                                                  </div>
+                                                  <span className="min-w-12 text-right text-slate-500">{formatPercent(prob)}</span>
+                                                </div>
+                                              ))}
+                                          </div>
+                                        )}
+                                      </td>
+                                    </tr>
+                                  );
+                                })}
+                              </tbody>
+                            </table>
+                          </div>
+                        </div>
+
+                        {(predictionResult.warnings?.unknown_columns_ignored?.length > 0 || Object.keys(predictionResult.warnings?.numeric_values_clipped || {}).length > 0) && (
+                          <div className="rounded-lg border border-amber-200 dark:border-amber-800 p-3 bg-amber-50 dark:bg-amber-900/20 text-xs text-amber-900 dark:text-amber-200 space-y-1">
+                            <p className="font-semibold">Prediction Warnings</p>
+                            {predictionResult.warnings?.unknown_columns_ignored?.length > 0 && (
+                              <p>Ignored unknown columns: {predictionResult.warnings.unknown_columns_ignored.join(', ')}</p>
+                            )}
+                            {Object.keys(predictionResult.warnings?.numeric_values_clipped || {}).length > 0 && (
+                              <p>Some numeric values were clipped to training range limits.</p>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    )}
                   </>
                 )}
               </div>

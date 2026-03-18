@@ -6,14 +6,20 @@ export default function Profile() {
   const { user, logout } = useAuth();
   const navigate = useNavigate();
   const [pageError, setPageError] = useState('');
+  const [isLoggingOut, setIsLoggingOut] = useState(false);
 
-  const handleLogout = () => {
+  const handleLogout = async () => {
+    if (isLoggingOut) return;
+
     try {
       setPageError('');
+      setIsLoggingOut(true);
+      await new Promise((resolve) => setTimeout(resolve, 850));
       logout();
       navigate('/landing');
     } catch {
       setPageError('Unable to log out right now. Please refresh and try again.');
+      setIsLoggingOut(false);
     }
   };
 
@@ -123,15 +129,28 @@ export default function Profile() {
 
               <button
                 onClick={handleLogout}
-                className="w-full flex items-center justify-center gap-2 px-4 py-3 rounded-xl bg-red-50 dark:bg-red-900/20 text-red-600 dark:text-red-400 hover:bg-red-100 dark:hover:bg-red-900/40 transition-colors font-medium border border-red-200 dark:border-red-800"
+                disabled={isLoggingOut}
+                className="w-full flex items-center justify-center gap-2 px-4 py-3 rounded-xl bg-red-50 dark:bg-red-900/20 text-red-600 dark:text-red-400 hover:bg-red-100 dark:hover:bg-red-900/40 transition-colors font-medium border border-red-200 dark:border-red-800 disabled:opacity-60 disabled:cursor-not-allowed"
               >
-                <span className="material-symbols-outlined">logout</span>
-                Logout
+                <span className="material-symbols-outlined">{isLoggingOut ? 'hourglass_top' : 'logout'}</span>
+                {isLoggingOut ? 'Logging Out' : 'Logout'}
               </button>
             </div>
           </div>
         </div>
       </div>
+
+      {isLoggingOut && (
+        <div className="logout-overlay fixed inset-0 bg-slate-900/40 backdrop-blur-sm z-[60] flex items-center justify-center px-4">
+          <div className="logout-chip bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-2xl shadow-2xl px-6 py-5 flex items-center gap-3">
+            <span className="material-symbols-outlined text-primary animate-spin">progress_activity</span>
+            <div>
+              <p className="font-semibold text-slate-900 dark:text-slate-100">Logging Out</p>
+              <p className="text-sm text-slate-500 dark:text-slate-400">Securing your session...</p>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

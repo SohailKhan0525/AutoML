@@ -2,9 +2,11 @@ from __future__ import annotations
 
 from typing import Any
 import re
+import os
 
 import numpy as np
 import pandas as pd
+from pandas.util import hash_pandas_object
 from sklearn.compose import ColumnTransformer
 from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
 from sklearn.impute import SimpleImputer
@@ -18,11 +20,13 @@ from sklearn.tree import DecisionTreeClassifier, DecisionTreeRegressor
 
 RANDOM_STATE = 42
 MAX_HIGH_CARDINALITY = 250
-MAX_TRAIN_ROWS = 60000
+MAX_TRAIN_ROWS = int(os.getenv("PRO_MAX_TRAIN_ROWS", "60000"))
 FREE_PLAN_MAX_TRAIN_ROWS = 15000
 FREE_PLAN_CV_FOLDS = 0
-PRO_PLAN_CV_FOLDS = 5
-PRO_PLAN_TUNING_ITERATIONS = 8
+PRO_PLAN_CV_FOLDS = int(os.getenv("PRO_PLAN_CV_FOLDS", "5"))
+PRO_PLAN_TUNING_ITERATIONS = int(os.getenv("PRO_PLAN_TUNING_ITERATIONS", "8"))
+PRO_SYNC_TIMEOUT_GUARD_ROWS = int(os.getenv("PRO_SYNC_TIMEOUT_GUARD_ROWS", "20000"))
+PRO_SYNC_TIMEOUT_GUARD_COLUMNS = int(os.getenv("PRO_SYNC_TIMEOUT_GUARD_COLUMNS", "40"))
 
 
 def analyze_dataset(df: pd.DataFrame) -> dict[str, Any]:
@@ -309,6 +313,47 @@ def _drop_target_leakage_features(
     return kept, dropped
 
 
+def _drop_duplicate_features(
+    X: pd.DataFrame,
+) -> tuple[pd.DataFrame, list[str], dict[str, str]]:
+    """Drop columns that are exact duplicates of another feature column."""
+    kept = X.copy()
+    duplicate_columns: list[str] = []
+    duplicate_map: dict[str, str] = {}
+    signature_to_primary: dict[tuple[Any, ...], str] = {}
+    normalized_cache: dict[str, pd.Series] = {}
+
+    for col in list(kept.columns):
+        normalized = kept[col].astype("object").where(kept[col].notna(), "__MISSING__")
+        normalized_cache[str(col)] = normalized
+
+        column_hash = hash_pandas_object(normalized, index=False)
+        signature = (
+            str(kept[col].dtype),
+            int(normalized.nunique(dropna=False)),
+            int(column_hash.sum()),
+            int(column_hash.iloc[0]) if len(column_hash) else 0,
+            int(column_hash.iloc[-1]) if len(column_hash) else 0,
+        )
+
+        primary = signature_to_primary.get(signature)
+        if primary is None:
+            signature_to_primary[signature] = str(col)
+            continue
+
+        # Verify exact equality to avoid hash-signature collisions.
+        if normalized_cache[str(primary)].equals(normalized):
+            duplicate_columns.append(str(col))
+            duplicate_map[str(col)] = str(primary)
+        else:
+            signature_to_primary[signature] = str(col)
+
+    if duplicate_columns:
+        kept = kept.drop(columns=duplicate_columns)
+
+    return kept, sorted(set(duplicate_columns)), duplicate_map
+
+
 def run_ml_pipeline(
     df: pd.DataFrame,
     target_column: str | None = None,
@@ -344,10 +389,29 @@ def run_ml_pipeline(
         y = sampled[resolved_target].copy()
         sampled_rows = len(sampled)
 
+    pro_timeout_guard_applied = (
+        normalized_plan == "pro"
+        and (
+            sampled_rows >= PRO_SYNC_TIMEOUT_GUARD_ROWS
+            or X.shape[1] >= PRO_SYNC_TIMEOUT_GUARD_COLUMNS
+        )
+    )
+
+    # Keep Pro baseline models, but skip expensive synchronous stages on larger datasets
+    # to avoid gateway timeouts from long-running requests.
+    effective_cv_folds = 0 if pro_timeout_guard_applied else cv_folds
+    effective_hyperparameter_tuning_enabled = (
+        hyperparameter_tuning_enabled and not pro_timeout_guard_applied
+    )
+
     task_type = detect_task_type(y)
 
     X, dropped_features = _drop_high_cardinality_features(X)
     X, leakage_features = _drop_target_leakage_features(X, y, task_type, resolved_target)
+    duplicate_features: list[str] = []
+    duplicate_feature_map: dict[str, str] = {}
+    if normalized_plan == "pro":
+        X, duplicate_features, duplicate_feature_map = _drop_duplicate_features(X)
     if X.shape[1] == 0:
         raise ValueError("All feature columns were dropped due to high cardinality or target leakage.")
 
@@ -407,12 +471,12 @@ def run_ml_pipeline(
     trained_models: dict[str, Pipeline] = {}
     cross_validation_results: list[dict[str, Any]] = []
     tuning_summary: dict[str, Any] = {
-        "enabled": hyperparameter_tuning_enabled,
-        "method": "randomized_search" if hyperparameter_tuning_enabled else "none",
+        "enabled": effective_hyperparameter_tuning_enabled,
+        "method": "randomized_search" if effective_hyperparameter_tuning_enabled else "none",
         "best_model": None,
         "best_score": None,
         "best_params": {},
-        "n_iter": PRO_PLAN_TUNING_ITERATIONS if hyperparameter_tuning_enabled else 0,
+        "n_iter": PRO_PLAN_TUNING_ITERATIONS if effective_hyperparameter_tuning_enabled else 0,
     }
 
     for model_name, model in models.items():
@@ -445,13 +509,13 @@ def run_ml_pipeline(
                 }
             )
 
-            if cv_folds > 1:
+            if effective_cv_folds > 1:
                 cv_metric = "accuracy" if task_type == "classification" else "r2"
                 cv_scores = cross_val_score(
                     pipeline,
                     X,
                     y,
-                    cv=cv_folds,
+                    cv=effective_cv_folds,
                     scoring=cv_metric,
                     n_jobs=1,
                 )
@@ -459,7 +523,7 @@ def run_ml_pipeline(
                     {
                         "model_name": model_name,
                         "metric_name": cv_metric,
-                        "folds": cv_folds,
+                        "folds": effective_cv_folds,
                         "mean_score": round(float(np.mean(cv_scores)), 4),
                         "std_score": round(float(np.std(cv_scores)), 4),
                     }
@@ -478,7 +542,7 @@ def run_ml_pipeline(
 
     model_scores.sort(key=lambda x: x["score"], reverse=True)
 
-    if hyperparameter_tuning_enabled and "Random Forest" in models:
+    if effective_hyperparameter_tuning_enabled and "Random Forest" in models:
         try:
             rf_estimator = models["Random Forest"]
             rf_pipeline = Pipeline(steps=[("preprocessor", preprocessor), ("model", rf_estimator)])
@@ -504,7 +568,7 @@ def run_ml_pipeline(
                 estimator=rf_pipeline,
                 param_distributions=param_dist,
                 n_iter=PRO_PLAN_TUNING_ITERATIONS,
-                cv=max(3, cv_folds),
+                cv=max(3, effective_cv_folds),
                 scoring=tuning_metric,
                 random_state=RANDOM_STATE,
                 n_jobs=1,
@@ -569,6 +633,11 @@ def run_ml_pipeline(
         except Exception as exc:
             model_failures.append({"model_name": "Random Forest (Tuned)", "error": f"Tuning failed: {exc}"})
 
+    if pro_timeout_guard_applied:
+        tuning_summary["method"] = "skipped_for_sync_timeout_guard"
+        tuning_summary["enabled"] = False
+        tuning_summary["n_iter"] = 0
+
     feature_importance: list[dict[str, Any]] = []
     importance_pipeline = trained_random_forest or trained_decision_tree
     feature_model = None
@@ -603,6 +672,10 @@ def run_ml_pipeline(
         auto_insights.append(
             f"Dropped potential leakage features: {', '.join(sorted(leakage_features)[:6])}."
         )
+    if duplicate_features:
+        auto_insights.append(
+            f"Removed duplicate features (Pro optimization): {', '.join(sorted(duplicate_features)[:6])}."
+        )
 
     best_model_name = model_scores[0]["model_name"]
     best_model = trained_models.get(best_model_name)
@@ -613,7 +686,7 @@ def run_ml_pipeline(
         "all_features": [str(c) for c in X.columns.tolist()],
     }
 
-    all_dropped_features = sorted(set([str(col) for col in dropped_features + leakage_features]))
+    all_dropped_features = sorted(set([str(col) for col in dropped_features + leakage_features + duplicate_features]))
 
     workflow_steps_all = [
         "Import libraries",
@@ -622,6 +695,7 @@ def run_ml_pipeline(
         "Handle missing values",
         "Encode categorical variables",
         "Feature engineering",
+        "Remove duplicate features",
         "Split data",
         "Scale/normalize features",
         "Choose model",
@@ -647,12 +721,44 @@ def run_ml_pipeline(
         "Make predictions",
         "Evaluate model",
     ]
-    if hyperparameter_tuning_enabled:
+    if effective_hyperparameter_tuning_enabled:
         workflow_steps_executed.append("Hyperparameter tuning")
-    if cv_folds > 1:
+    if effective_cv_folds > 1:
         workflow_steps_executed.append("Cross-validation")
     workflow_steps_executed.extend(["Save model", "Deploy model"])
+    if normalized_plan == "pro" and duplicate_features:
+        workflow_steps_executed.append("Remove duplicate features")
     workflow_steps_skipped = [step for step in workflow_steps_all if step not in workflow_steps_executed]
+
+    workflow_strategy = {
+        "what": "Automated supervised ML with preprocessing, plan-aware optimization, and model ranking.",
+        "how": {
+            "target_column": str(resolved_target),
+            "task_type": task_type,
+            "sampling": {
+                "train_row_limit": int(train_row_limit),
+                "trained_rows": int(sampled_rows),
+                "downsampled": bool(len(df) > train_row_limit),
+            },
+            "feature_controls": {
+                "high_cardinality_dropped": sorted([str(col) for col in dropped_features]),
+                "leakage_dropped": sorted([str(col) for col in leakage_features]),
+                "duplicate_dropped": sorted([str(col) for col in duplicate_features]),
+                "duplicate_map": duplicate_feature_map,
+            },
+            "validation": {
+                "cross_validation_folds": int(effective_cv_folds),
+                "hyperparameter_tuning_enabled": bool(effective_hyperparameter_tuning_enabled),
+                "timeout_guard_applied": bool(pro_timeout_guard_applied),
+            },
+        },
+        "why": [
+            "Reduce overfitting and leakage risk before training.",
+            "Keep runtime predictable with plan-based controls.",
+            "Prioritize robust model ranking using holdout metrics and optional CV/tuning.",
+            "For Pro, remove duplicate features to reduce redundancy and improve stability.",
+        ],
+    }
 
     result = {
         "pricing_plan": normalized_plan,
@@ -660,8 +766,9 @@ def run_ml_pipeline(
         "plan_limits": {
             "max_train_rows": int(train_row_limit),
             "advanced_models_enabled": normalized_plan == "pro",
-            "cross_validation_folds": int(cv_folds),
-            "hyperparameter_tuning_enabled": hyperparameter_tuning_enabled,
+            "cross_validation_folds": int(effective_cv_folds),
+            "hyperparameter_tuning_enabled": effective_hyperparameter_tuning_enabled,
+            "timeout_guard_applied": pro_timeout_guard_applied,
         },
         "workflow_steps": workflow_steps_executed,
         "workflow_steps_skipped": workflow_steps_skipped,
@@ -672,6 +779,8 @@ def run_ml_pipeline(
         "trained_rows": int(sampled_rows),
         "dropped_feature_columns": all_dropped_features,
         "leakage_feature_columns": sorted([str(col) for col in leakage_features]),
+        "duplicate_feature_columns": sorted([str(col) for col in duplicate_features]),
+        "duplicate_feature_map": duplicate_feature_map,
         "best_model_name": best_model_name,
         "quality_score": quality_score,
         "auto_insights": auto_insights,
@@ -681,6 +790,7 @@ def run_ml_pipeline(
         "model_failures": model_failures,
         "feature_importance": feature_importance,
         "feature_metadata": feature_metadata,
+        "workflow_strategy": workflow_strategy,
     }
 
     if return_best_model:

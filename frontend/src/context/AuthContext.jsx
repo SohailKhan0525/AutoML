@@ -128,12 +128,54 @@ export const AuthProvider = ({ children }) => {
     localStorage.setItem('user', JSON.stringify(data.user));
   };
 
+  const startOAuth = async (provider) => {
+    const normalized = String(provider || '').toLowerCase();
+    if (!['github', 'google'].includes(normalized)) {
+      throw new Error('Unsupported OAuth provider.');
+    }
+
+    const response = await fetch(`/api/auth/oauth/${normalized}/start`);
+    if (!response.ok) {
+      let message = 'OAuth initialization failed.';
+      try {
+        const data = await response.json();
+        message = typeof data?.detail === 'string' ? data.detail : (data?.detail?.message || message);
+      } catch {
+        // keep fallback
+      }
+      throw new Error(message);
+    }
+
+    const data = await response.json();
+    if (!data?.authorization_url) {
+      throw new Error('OAuth authorization URL missing.');
+    }
+    window.location.href = data.authorization_url;
+  };
+
+  const completeOAuth = async (oauthToken) => {
+    if (!oauthToken) {
+      throw new Error('Missing OAuth token.');
+    }
+
+    setToken(oauthToken);
+    localStorage.setItem('token', oauthToken);
+    const verifiedUser = await verifyToken(oauthToken);
+    if (!verifiedUser) {
+      clearAuthState();
+      throw new Error('OAuth login verification failed.');
+    }
+
+    setUser(verifiedUser);
+    localStorage.setItem('user', JSON.stringify(verifiedUser));
+  };
+
   const logout = () => {
     clearAuthState();
   };
 
   return (
-    <AuthContext.Provider value={{ user, token, loading, signup, login, logout }}>
+    <AuthContext.Provider value={{ user, token, loading, signup, login, logout, startOAuth, completeOAuth }}>
       {children}
     </AuthContext.Provider>
   );
