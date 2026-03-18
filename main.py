@@ -3,6 +3,7 @@ import logging
 import pickle
 import re
 import time
+from datetime import datetime
 from asyncio import Lock
 from time import perf_counter
 from typing import Any
@@ -11,6 +12,7 @@ import os
 
 import numpy as np
 import pandas as pd
+import nbformat
 from fastapi import Body, Depends, FastAPI, File, Header, HTTPException, Query, Request, UploadFile
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, Response, FileResponse
@@ -163,6 +165,207 @@ def _json_safe(value: Any) -> Any:
         return value
 
     return value
+
+
+def _generate_automl_notebook(
+    df: pd.DataFrame,
+    filename: str,
+    target_column: str,
+    ml_results: dict[str, Any],
+    summary: dict[str, Any],
+) -> bytes:
+    """Generate an AutoML notebook artifact using nbformat."""
+    task_type = ml_results.get("task_type", "unknown")
+    best_model_name = ml_results.get("best_model_name", "N/A")
+    model_scores = ml_results.get("model_scores", [])
+    top_score = model_scores[0] if model_scores else {}
+    metric_name = top_score.get("metric_name", "N/A")
+    metric_value = top_score.get("score", "N/A")
+    insights = ml_results.get("auto_insights", [])
+    feature_importance = ml_results.get("feature_importance", [])
+    dropped_features = ml_results.get("dropped_feature_columns", [])
+    leakage_features = ml_results.get("leakage_feature_columns", [])
+
+    preview_records = df.head(10).replace([np.inf, -np.inf], np.nan).where(pd.notna(df.head(10)), None).to_dict(orient="records")
+
+    nb = nbformat.v4.new_notebook()
+    nb.cells = [
+        nbformat.v4.new_markdown_cell(
+            "\n".join(
+                [
+                    "# AutoML Notebook",
+                    "",
+                    f"Generated from dataset: **{filename}**",
+                    f"Target column: **{target_column}**",
+                    f"Task type: **{task_type}**",
+                    f"Best model: **{best_model_name}**",
+                    f"Top metric: **{metric_name} = {metric_value}**",
+                    f"Generated at: **{datetime.utcnow().isoformat()}Z**",
+                ]
+            )
+        ),
+        nbformat.v4.new_markdown_cell("## 1. Data Loading"),
+        nbformat.v4.new_code_cell(
+            "\n".join(
+                [
+                    "import pandas as pd",
+                    "import numpy as np",
+                    "from sklearn.model_selection import train_test_split",
+                    "from sklearn.compose import ColumnTransformer",
+                    "from sklearn.pipeline import Pipeline",
+                    "from sklearn.preprocessing import OneHotEncoder, StandardScaler",
+                    "from sklearn.impute import SimpleImputer",
+                    "from sklearn.linear_model import LogisticRegression, LinearRegression",
+                    "from sklearn.tree import DecisionTreeClassifier, DecisionTreeRegressor",
+                    "from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor",
+                    "from sklearn.metrics import accuracy_score, r2_score, f1_score, precision_score, recall_score, mean_absolute_error, mean_squared_error",
+                    "",
+                    "# Load your local CSV here",
+                    f"df = pd.read_csv('{filename}')",
+                    "df.head()",
+                ]
+            )
+        ),
+        nbformat.v4.new_markdown_cell("## 2. Data Cleaning and Missing Values"),
+        nbformat.v4.new_code_cell(
+            "\n".join(
+                [
+                    "# Basic dataset summary",
+                    "print('Shape:', df.shape)",
+                    "print('Columns:', list(df.columns))",
+                    "missing = df.isna().sum().sort_values(ascending=False)",
+                    "missing[missing > 0]",
+                    "",
+                    "# Replace infinities",
+                    "df = df.replace([np.inf, -np.inf], np.nan)",
+                ]
+            )
+        ),
+        nbformat.v4.new_markdown_cell("## 3. Exploratory Data Analysis (EDA)"),
+        nbformat.v4.new_code_cell(
+            "\n".join(
+                [
+                    "# Numeric summary",
+                    "df.describe(include='all').transpose()",
+                    "",
+                    "# Correlation (numeric only)",
+                    "numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()",
+                    "if len(numeric_cols) >= 2:",
+                    "    corr = df[numeric_cols].corr(numeric_only=True)",
+                    "    display(corr)",
+                ]
+            )
+        ),
+        nbformat.v4.new_markdown_cell("## 4. Preprocessing"),
+        nbformat.v4.new_code_cell(
+            "\n".join(
+                [
+                    f"target_column = '{target_column}'",
+                    "X = df.drop(columns=[target_column]).copy()",
+                    "y = df[target_column].copy()",
+                    "",
+                    "numeric_features = X.select_dtypes(include=[np.number]).columns.tolist()",
+                    "categorical_features = [c for c in X.columns if c not in numeric_features]",
+                    "",
+                    "numeric_transformer = Pipeline(steps=[",
+                    "    ('imputer', SimpleImputer(strategy='median')),",
+                    "    ('scaler', StandardScaler()),",
+                    "])",
+                    "",
+                    "categorical_transformer = Pipeline(steps=[",
+                    "    ('onehot', OneHotEncoder(handle_unknown='ignore', min_frequency=0.01, max_categories=15)),",
+                    "])",
+                    "",
+                    "preprocessor = ColumnTransformer(transformers=[",
+                    "    ('num', numeric_transformer, numeric_features),",
+                    "    ('cat', categorical_transformer, categorical_features),",
+                    "])",
+                    "",
+                    "X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)",
+                ]
+            )
+        ),
+        nbformat.v4.new_markdown_cell("## 5. Model Training"),
+        nbformat.v4.new_code_cell(
+            "\n".join(
+                [
+                    f"task_type = '{task_type}'",
+                    "if task_type == 'classification':",
+                    "    model = LogisticRegression(max_iter=300, solver='liblinear', random_state=42)",
+                    "else:",
+                    "    model = LinearRegression()",
+                    "",
+                    "pipeline = Pipeline(steps=[('preprocessor', preprocessor), ('model', model)])",
+                    "pipeline.fit(X_train, y_train)",
+                    "preds = pipeline.predict(X_test)",
+                ]
+            )
+        ),
+        nbformat.v4.new_markdown_cell("## 6. Evaluation"),
+        nbformat.v4.new_code_cell(
+            "\n".join(
+                [
+                    "if task_type == 'classification':",
+                    "    print('Accuracy:', round(accuracy_score(y_test, preds), 4))",
+                    "    print('Precision:', round(precision_score(y_test, preds, average='weighted', zero_division=0), 4))",
+                    "    print('Recall:', round(recall_score(y_test, preds, average='weighted', zero_division=0), 4))",
+                    "    print('F1 Score:', round(f1_score(y_test, preds, average='weighted', zero_division=0), 4))",
+                    "else:",
+                    "    print('R2:', round(r2_score(y_test, preds), 4))",
+                    "    print('MAE:', round(mean_absolute_error(y_test, preds), 4))",
+                    "    print('RMSE:', round(np.sqrt(mean_squared_error(y_test, preds)), 4))",
+                ]
+            )
+        ),
+        nbformat.v4.new_markdown_cell("## 7. Feature Importance"),
+        nbformat.v4.new_code_cell(
+            "\n".join(
+                [
+                    "# Tree-based models expose feature_importances_",
+                    "try:",
+                    "    model_step = pipeline.named_steps['model']",
+                    "    if hasattr(model_step, 'feature_importances_'):",
+                    "        transformed_features = pipeline.named_steps['preprocessor'].get_feature_names_out()",
+                    "        importances = model_step.feature_importances_",
+                    "        fi = pd.DataFrame({'feature': transformed_features, 'importance': importances})",
+                    "        fi = fi.sort_values('importance', ascending=False).head(15)",
+                    "        display(fi)",
+                    "    else:",
+                    "        print('Selected model does not expose feature importance.')",
+                    "except Exception as exc:",
+                    "    print('Feature importance step skipped:', exc)",
+                ]
+            )
+        ),
+        nbformat.v4.new_markdown_cell("## 8. AutoML Snapshot and Insights"),
+        nbformat.v4.new_code_cell(
+            "\n".join(
+                [
+                    f"preview_rows = {json.dumps(_json_safe(preview_records), ensure_ascii=True)}",
+                    f"model_scores = {json.dumps(_json_safe(model_scores), ensure_ascii=True)}",
+                    f"feature_importance_snapshot = {json.dumps(_json_safe(feature_importance), ensure_ascii=True)}",
+                    f"auto_insights = {json.dumps(_json_safe(insights), ensure_ascii=True)}",
+                    f"dropped_features = {json.dumps(_json_safe(dropped_features), ensure_ascii=True)}",
+                    f"leakage_features = {json.dumps(_json_safe(leakage_features), ensure_ascii=True)}",
+                    "",
+                    "print('Preview rows loaded:', len(preview_rows))",
+                    "print('Top model scores:')",
+                    "for row in model_scores[:5]:",
+                    "    print('-', row)",
+                    "",
+                    "print('Insights:')",
+                    "for insight in auto_insights:",
+                    "    print('-', insight)",
+                    "",
+                    "print('Dropped features:', dropped_features)",
+                    "print('Leakage features:', leakage_features)",
+                ]
+            )
+        ),
+    ]
+
+    notebook_json = nbformat.writes(nb, version=4)
+    return notebook_json.encode("utf-8")
 
 
 def _cleanup_expired_datasets() -> None:
@@ -571,6 +774,7 @@ async def upload_dataset(file: UploadFile = File(...)):
         "summary": None,
         "automl_cache": {},
         "model_artifacts": {},
+        "notebook_artifacts": {},
     }
     app.state.dataset_order.append(dataset_id)
     app.state.latest_dataset_id = dataset_id
@@ -702,6 +906,21 @@ async def run_automl(
                             "numeric_limits": numeric_limits,
                         }
                         logger.info(f"Rebuilt missing model artifact for {selected_target}")
+                    if selected_target not in dataset["notebook_artifacts"]:
+                        if dataset["summary"] is None:
+                            dataset["summary"] = analyze_dataset(df)
+                        notebook_blob = _generate_automl_notebook(
+                            df=df,
+                            filename=filename,
+                            target_column=selected_target,
+                            ml_results=ml_results,
+                            summary=dataset["summary"],
+                        )
+                        dataset["notebook_artifacts"][selected_target] = {
+                            "blob": notebook_blob,
+                            "generated_at": time.time(),
+                            "plan": pricing_plan,
+                        }
                 else:
                     start = perf_counter()
                     ml_results, best_model = run_ml_pipeline(
@@ -737,6 +956,20 @@ async def run_automl(
                         "numeric_limits": numeric_limits,
                     }
                     logger.info(f"Model artifact stored successfully. Artifacts keys: {list(dataset['model_artifacts'].keys())}")
+                    if dataset["summary"] is None:
+                        dataset["summary"] = analyze_dataset(df)
+                    notebook_blob = _generate_automl_notebook(
+                        df=df,
+                        filename=filename,
+                        target_column=selected_target,
+                        ml_results=ml_results,
+                        summary=dataset["summary"],
+                    )
+                    dataset["notebook_artifacts"][selected_target] = {
+                        "blob": notebook_blob,
+                        "generated_at": time.time(),
+                        "plan": pricing_plan,
+                    }
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except Exception as exc:
@@ -798,6 +1031,43 @@ async def download_model(dataset_id: str, target_column: str | None = None):
         content=artifact["blob"],
         media_type="application/octet-stream",
         headers={"Content-Disposition": f'attachment; filename="{base_name}_{selected_target}.pkl"'},
+    )
+
+
+@app.get("/notebook/download")
+async def download_notebook(dataset_id: str, target_column: str | None = None):
+    """Download generated AutoML notebook artifact (.ipynb)."""
+    dataset = _get_dataset(dataset_id)
+    selected_target = target_column or (list(dataset["automl_cache"].keys())[-1] if dataset["automl_cache"] else None)
+    if not selected_target:
+        raise HTTPException(status_code=400, detail="No AutoML results available. Run AutoML first.")
+
+    artifact = dataset["notebook_artifacts"].get(selected_target)
+    if not artifact:
+        cached = dataset["automl_cache"].get(selected_target)
+        if not cached:
+            raise HTTPException(status_code=404, detail="No notebook artifact found for selected target.")
+        if dataset["summary"] is None:
+            dataset["summary"] = analyze_dataset(dataset["df"])
+        notebook_blob = _generate_automl_notebook(
+            df=dataset["df"],
+            filename=dataset["filename"],
+            target_column=selected_target,
+            ml_results=cached["results"],
+            summary=dataset["summary"],
+        )
+        artifact = {
+            "blob": notebook_blob,
+            "generated_at": time.time(),
+            "plan": cached.get("plan", "free"),
+        }
+        dataset["notebook_artifacts"][selected_target] = artifact
+
+    base_name = dataset["filename"].rsplit(".", 1)[0]
+    return Response(
+        content=artifact["blob"],
+        media_type="application/x-ipynb+json",
+        headers={"Content-Disposition": f'attachment; filename="{base_name}_{selected_target}.ipynb"'},
     )
 
 

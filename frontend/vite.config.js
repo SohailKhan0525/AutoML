@@ -30,6 +30,10 @@ export default defineConfig({
         target: 'http://localhost:8000',
         changeOrigin: true,
       },
+      '/notebook': {
+        target: 'http://localhost:8000',
+        changeOrigin: true,
+      },
       '/report': {
         target: 'http://localhost:8000',
         changeOrigin: true,

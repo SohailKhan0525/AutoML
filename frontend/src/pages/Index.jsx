@@ -37,6 +37,7 @@ const Index = () => {
   const pricingPlanLabel = pricingPlan === 'pro' ? 'Pro Plan' : 'Free Plan';
   const workflowModeLabel = pricingPlan === 'pro' ? 'Advanced Mode' : 'Fast Mode';
   const trainRowLimit = pricingPlan === 'pro' ? 60000 : 15000;
+  const advancedNotebookEligible = pricingPlan === 'pro';
 
   const safeError = async (response, fallbackMessage) => {
     try {
@@ -263,6 +264,27 @@ const Index = () => {
 
     window.open(`/report?dataset_id=${encodeURIComponent(id)}`, '_blank', 'noopener,noreferrer');
     await recordActivity('report_exported', `Exported report for dataset ${id}`);
+  };
+
+  const downloadNotebook = async () => {
+    const id = datasetId || historyItems[0]?.dataset_id;
+    if (!id) {
+      setPageError('No dataset selected. Upload and run AutoML first.');
+      return;
+    }
+
+    if (!advancedNotebookEligible) {
+      setPageError('Download Notebook is available only in Advanced Mode ($150) and is coming soon for this account tier.');
+      return;
+    }
+
+    const queryParams = new URLSearchParams({ dataset_id: id });
+    if (targetColumn) {
+      queryParams.set('target_column', targetColumn);
+    }
+
+    window.open(`/notebook/download?${queryParams.toString()}`, '_blank', 'noopener,noreferrer');
+    await recordActivity('notebook_downloaded', `Downloaded notebook for dataset ${id}${targetColumn ? ` with target ${targetColumn}` : ''}`);
   };
 
   const correlation = summary?.correlation;
@@ -564,6 +586,16 @@ const Index = () => {
 
               <button className="shrink-0 border border-slate-300 dark:border-slate-700 px-3 sm:px-4 py-2 rounded-lg text-xs sm:text-sm font-medium hover:bg-slate-50 dark:hover:bg-slate-800" type="button" onClick={downloadModel}>
                 Download Model
+              </button>
+
+              <button
+                className="shrink-0 border border-slate-300 dark:border-slate-700 px-3 sm:px-4 py-2 rounded-lg text-xs sm:text-sm font-medium hover:bg-slate-50 dark:hover:bg-slate-800 disabled:opacity-50 disabled:cursor-not-allowed"
+                type="button"
+                onClick={downloadNotebook}
+                disabled={!advancedNotebookEligible}
+                title={advancedNotebookEligible ? 'Download generated notebook (.ipynb)' : 'Advanced Mode ($150) - Coming Soon'}
+              >
+                Download Notebook {!advancedNotebookEligible ? '(Coming Soon)' : ''}
               </button>
             </div>
           </div>
