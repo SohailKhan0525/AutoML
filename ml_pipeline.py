@@ -9,6 +9,7 @@ from sklearn.compose import ColumnTransformer
 from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
 from sklearn.impute import SimpleImputer
 from sklearn.linear_model import LogisticRegression
+from sklearn.linear_model import LinearRegression
 from sklearn.metrics import accuracy_score, f1_score, mean_absolute_error, mean_squared_error, precision_score, r2_score, recall_score
 from sklearn.model_selection import RandomizedSearchCV, cross_val_score, train_test_split
 from sklearn.pipeline import Pipeline
@@ -376,6 +377,7 @@ def run_ml_pipeline(
         split_kwargs = {"stratify": y if should_stratify else None}
     else:
         models = {
+            "Linear Regression": LinearRegression(),
             "Decision Tree": DecisionTreeRegressor(random_state=RANDOM_STATE),
         }
 
@@ -613,6 +615,45 @@ def run_ml_pipeline(
 
     all_dropped_features = sorted(set([str(col) for col in dropped_features + leakage_features]))
 
+    workflow_steps_all = [
+        "Import libraries",
+        "Load dataset",
+        "Explore data (EDA)",
+        "Handle missing values",
+        "Encode categorical variables",
+        "Feature engineering",
+        "Split data",
+        "Scale/normalize features",
+        "Choose model",
+        "Train model",
+        "Make predictions",
+        "Evaluate model",
+        "Hyperparameter tuning",
+        "Cross-validation",
+        "Save model",
+        "Deploy model",
+    ]
+    workflow_steps_executed = [
+        "Import libraries",
+        "Load dataset",
+        "Explore data (EDA)",
+        "Handle missing values",
+        "Encode categorical variables",
+        "Feature engineering",
+        "Split data",
+        "Scale/normalize features",
+        "Choose model",
+        "Train model",
+        "Make predictions",
+        "Evaluate model",
+    ]
+    if hyperparameter_tuning_enabled:
+        workflow_steps_executed.append("Hyperparameter tuning")
+    if cv_folds > 1:
+        workflow_steps_executed.append("Cross-validation")
+    workflow_steps_executed.extend(["Save model", "Deploy model"])
+    workflow_steps_skipped = [step for step in workflow_steps_all if step not in workflow_steps_executed]
+
     result = {
         "pricing_plan": normalized_plan,
         "workflow_mode": "Advanced Mode" if normalized_plan == "pro" else "Fast Mode",
@@ -622,24 +663,8 @@ def run_ml_pipeline(
             "cross_validation_folds": int(cv_folds),
             "hyperparameter_tuning_enabled": hyperparameter_tuning_enabled,
         },
-        "workflow_steps": [
-            "Import libraries",
-            "Load dataset",
-            "Explore data (EDA)",
-            "Handle missing values",
-            "Encode categorical variables",
-            "Feature engineering",
-            "Split data",
-            "Scale/normalize features",
-            "Choose model",
-            "Train model",
-            "Make predictions",
-            "Evaluate model",
-            "Hyperparameter tuning",
-            "Cross-validation",
-            "Save model",
-            "Deploy model",
-        ],
+        "workflow_steps": workflow_steps_executed,
+        "workflow_steps_skipped": workflow_steps_skipped,
         "task_type": task_type,
         "target_column": str(resolved_target),
         "numeric_feature_count": len(numeric_features),

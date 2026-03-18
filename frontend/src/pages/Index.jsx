@@ -749,6 +749,22 @@ const Index = () => {
                     <p>Advanced Models: {mlResults.plan_limits?.advanced_models_enabled ? 'Enabled' : 'Not available on this plan'}</p>
                     <p>Cross-Validation: {mlResults.plan_limits?.cross_validation_folds ? `${mlResults.plan_limits.cross_validation_folds}-fold` : 'Disabled on this plan'}</p>
                     <p>Hyperparameter Tuning: {mlResults.hyperparameter_tuning?.enabled ? 'Enabled (RandomizedSearchCV)' : 'Disabled on this plan'}</p>
+                    <p>Workflow Steps Executed: {(mlResults.workflow_steps || []).length}</p>
+                    {(mlResults.workflow_steps_skipped || []).length > 0 && (
+                      <p>Workflow Steps Skipped: {(mlResults.workflow_steps_skipped || []).join(', ')}</p>
+                    )}
+                  </div>
+                )}
+
+                {(mlResults?.leakage_feature_columns || []).length > 0 && (
+                  <div className="mt-4 p-3 rounded-lg border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/20 text-amber-900 dark:text-amber-200 text-xs space-y-1">
+                    <p className="font-semibold">Leakage Guard Applied</p>
+                    <p>
+                      Dropped potential target-leakage features: {mlResults.leakage_feature_columns.join(', ')}
+                    </p>
+                    <p>
+                      This helps prevent overly optimistic scores and improves generalization on new data.
+                    </p>
                   </div>
                 )}
               </div>
