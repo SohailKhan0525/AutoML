@@ -615,15 +615,20 @@ async def dataset_summary(dataset_id: str | None = None, preview_rows: int = 5):
 
 @app.post("/run-automl")
 async def run_automl(
-    dataset_id: str | None = None,
+    dataset_id: str | None = Query(default=None),
     target_column: str | None = Query(default=None),
+    payload: dict[str, Any] | None = Body(default=None),
     x_pricing_plan: str | None = Header(default=None, alias="X-Pricing-Plan"),
 ):
     """Train models for a dataset and selected target with per-target caching."""
-    dataset = _get_dataset(dataset_id)
+    payload = payload or {}
+    resolved_dataset_id = dataset_id or payload.get("dataset_id")
+    resolved_target_column = target_column or payload.get("target_column")
+
+    dataset = _get_dataset(resolved_dataset_id)
     df = dataset["df"]
     filename = dataset["filename"]
-    selected_target = target_column or str(df.columns[-1])
+    selected_target = resolved_target_column or str(df.columns[-1])
     pricing_plan = _normalize_pricing_plan(x_pricing_plan)
 
     cached_entry = dataset["automl_cache"].get(selected_target)
